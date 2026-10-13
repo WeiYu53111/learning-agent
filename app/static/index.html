@@ -1,0 +1,574 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PDF 教学 Agent</title>
+  <style>
+    /* 全局设计令牌和基础元素样式。 */
+    :root {
+      color-scheme: light;
+      --ink: #1c2434;
+      --muted: #687083;
+      --line: #dfe3ea;
+      --paper: #ffffff;
+      --canvas: #f4f5f8;
+      --brand: #4f46e5;
+      --brand-soft: #eef2ff;
+      --good: #16835f;
+      --warn: #b45309;
+      --danger: #b42318;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--canvas); }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+
+    /* 页面骨架：顶部状态栏、文档侧栏和主内容区。 */
+    .topbar {
+      display: flex; justify-content: space-between; gap: 20px; align-items: center;
+      padding: 20px 28px; background: #171a2b; color: white;
+    }
+    .brand h1 { margin: 0 0 4px; font-size: 21px; letter-spacing: -.02em; }
+    .brand p { margin: 0; color: #b8bdd0; font-size: 13px; }
+    .status { border: 1px solid #4d536c; border-radius: 999px; padding: 7px 12px; font-size: 12px; }
+    .layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: calc(100vh - 81px); }
+    .sidebar { border-right: 1px solid var(--line); background: var(--paper); padding: 22px; }
+    .content { padding: 30px; max-width: 1050px; width: 100%; margin: 0 auto; }
+    .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 18px; box-shadow: 0 3px 12px rgb(20 28 45 / 4%); }
+    .panel h2, .panel h3 { margin: 0 0 14px; }
+    .panel h2 { font-size: 19px; }
+    .panel h3 { font-size: 16px; }
+
+    /* 表单、操作按钮和可复用的内容状态。 */
+    .eyebrow { color: var(--brand); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+    .muted { color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .stack { display: grid; gap: 12px; }
+    label { display: grid; gap: 6px; font-size: 13px; font-weight: 650; }
+    input, select, textarea {
+      width: 100%; border: 1px solid #cfd4df; border-radius: 9px; padding: 10px 11px;
+      background: white; color: var(--ink); outline: none;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+    textarea { resize: vertical; min-height: 110px; line-height: 1.55; }
+    .primary, .secondary, .ghost {
+      border-radius: 9px; padding: 10px 14px; font-weight: 700; border: 0;
+    }
+    .primary { background: var(--brand); color: white; }
+    .primary:hover { background: #4338ca; }
+    .secondary { background: var(--brand-soft); color: #3730a3; }
+    .ghost { background: white; color: var(--ink); border: 1px solid var(--line); }
+    .download-link { display: inline-flex; align-items: center; text-decoration: none; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .upload { border: 1px dashed #aeb5c5; border-radius: 12px; padding: 14px; background: #fafbfc; }
+    .doc-list, .section-list { display: grid; gap: 7px; margin-top: 12px; }
+    .item {
+      display: block; width: 100%; text-align: left; padding: 10px 11px; border: 1px solid transparent;
+      border-radius: 9px; background: transparent; color: var(--ink);
+    }
+    .item:hover, .item.active { background: var(--brand-soft); border-color: #c7d2fe; }
+    .item small { display: block; color: var(--muted); margin-top: 3px; }
+    .section-list { max-height: 48vh; overflow: auto; padding-right: 3px; }
+
+    /* 章节预览、知识地图、课程题目和掌握度组件。 */
+    .preview { white-space: pre-wrap; max-height: 310px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 14px; font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; background: #fbfbfd; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .kp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .kp-card { border: 1px solid var(--line); border-radius: 11px; padding: 14px; }
+    .kp-card.current { border-color: #818cf8; background: var(--brand-soft); }
+    .kp-card.done { border-color: #a7f3d0; background: #ecfdf5; }
+    .kp-card.locked { opacity: .62; }
+    .kp-card strong { display: block; margin-bottom: 6px; }
+    .pill { display: inline-block; font-size: 11px; border-radius: 999px; padding: 3px 8px; background: var(--brand-soft); color: #3730a3; margin-right: 5px; }
+    .lesson-text { white-space: pre-wrap; line-height: 1.75; }
+    .question { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
+    .question:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+    .question-title { font-weight: 750; line-height: 1.55; margin-bottom: 10px; }
+    .actions { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 10px; }
+    .feedback { border-radius: 9px; padding: 12px; margin-top: 10px; line-height: 1.55; }
+    .feedback.good { background: #ecfdf5; color: #065f46; }
+    .feedback.warn { background: #fff7ed; color: #9a3412; }
+    .correction { border-left: 3px solid var(--brand); background: var(--brand-soft); padding: 12px; margin-top: 10px; line-height: 1.65; white-space: pre-wrap; }
+    .progress-row { margin-bottom: 14px; }
+    .progress-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 13px; }
+    .bar { height: 7px; background: #e7e9ef; border-radius: 99px; overflow: hidden; }
+    .bar > span { display: block; height: 100%; background: var(--brand); }
+    .notice { border-left: 3px solid var(--warn); background: #fffbeb; padding: 10px 12px; font-size: 13px; line-height: 1.5; }
+    .error { border-left-color: var(--danger); background: #fef3f2; color: var(--danger); }
+    .hidden { display: none !important; }
+    .loading::after { content: ""; display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; margin-left: 8px; vertical-align: -2px; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* 窄屏下将侧栏和双列表单改为单列。 */
+    @media (max-width: 820px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+      .grid-2 { grid-template-columns: 1fr; }
+      .content { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- 顶部区域展示产品名称和后端连接状态。 -->
+  <header class="topbar">
+    <div class="brand">
+      <h1>PDF 教学 Agent</h1>
+      <p>从教材章节到讲解、练习与掌握度记录</p>
+    </div>
+    <div id="system-status" class="status">正在连接…</div>
+  </header>
+
+  <main class="layout">
+    <!-- 左侧负责上传文档以及选择文档和章节。 -->
+    <aside class="sidebar">
+      <div class="eyebrow">第一步</div>
+      <h2>上传教材</h2>
+      <form id="upload-form" class="upload stack">
+        <input id="pdf-file" type="file" accept="application/pdf,.pdf" required>
+        <button class="primary" type="submit">上传并解析</button>
+        <div class="muted">仅支持带文本层的 PDF，最大 20 MB；暂不支持扫描件。</div>
+      </form>
+      <div id="global-message" class="notice hidden"></div>
+
+      <div style="margin-top:24px" class="eyebrow">文档</div>
+      <div id="document-list" class="doc-list"></div>
+
+      <div style="margin-top:24px" class="eyebrow">章节</div>
+      <div id="section-list" class="section-list">
+        <div class="muted">请先选择文档。</div>
+      </div>
+    </aside>
+
+    <!-- 右侧按“确认原文—配置学习—逐步练习”的顺序展示内容。 -->
+    <section class="content">
+      <div id="empty-state" class="panel">
+        <div class="eyebrow">开始学习</div>
+        <h2 style="margin-top:8px">选择一个章节</h2>
+        <p class="muted">上传教材并在左侧选择章节。系统会先展示原文预览，确认后再生成教学内容。</p>
+      </div>
+
+      <div id="section-panel" class="hidden">
+        <section class="panel">
+          <div class="eyebrow">原文确认</div>
+          <h2 id="section-title" style="margin-top:8px"></h2>
+          <p id="section-meta" class="muted"></p>
+          <div class="actions">
+            <a id="section-download" class="ghost download-link" href="#">下载选中章节内容</a>
+          </div>
+          <div id="section-preview" class="preview"></div>
+        </section>
+
+        <section class="panel">
+          <div class="eyebrow">学习设置</div>
+          <h2 style="margin-top:8px">生成本节课程</h2>
+          <form id="prepare-form" class="stack">
+            <div class="grid-2">
+              <label>学习者 ID
+                <input id="user-id" value="default-user" maxlength="100" required>
+              </label>
+              <label>当前水平
+                <select id="learner-level">
+                  <option value="beginner">初学者</option>
+                  <option value="intermediate">有一定基础</option>
+                  <option value="advanced">进阶学习者</option>
+                </select>
+              </label>
+              <label>题目难度
+                <select id="difficulty">
+                  <option value="1">1 · 入门</option><option value="2" selected>2 · 基础</option>
+                  <option value="3">3 · 中等</option><option value="4">4 · 较难</option><option value="5">5 · 挑战</option>
+                </select>
+              </label>
+            </div>
+            <label>学习目标
+              <input id="learning-goal" value="理解并能够应用本节知识" maxlength="500" required>
+            </label>
+            <button id="prepare-button" class="primary" type="submit">确认范围并开始备课</button>
+          </form>
+        </section>
+      </div>
+
+      <div id="learning-output" class="hidden">
+        <section class="panel">
+          <div class="eyebrow">知识地图</div>
+          <h2 style="margin-top:8px">本节知识点</h2>
+          <div id="knowledge-points" class="kp-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div id="lesson-eyebrow" class="eyebrow">当前知识点</div>
+          <h2 id="lesson-title" style="margin-top:8px"></h2>
+          <div id="lesson-text" class="lesson-text"></div>
+          <h3 style="margin-top:20px">例子</h3>
+          <div id="lesson-example" class="lesson-text"></div>
+          <p id="lesson-source" class="muted"></p>
+        </section>
+
+        <section class="panel">
+          <div class="eyebrow">理解检查</div>
+          <h2 style="margin-top:8px">理解检查</h2>
+          <div id="questions"></div>
+        </section>
+
+        <section class="panel">
+          <div class="eyebrow">学习记忆</div>
+          <h2 style="margin-top:8px">掌握情况</h2>
+          <div id="progress"><div class="muted">完成练习后显示掌握情况。</div></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // 单页应用的会话状态；仅保存渲染和后续 API 调用所需的数据。
+    const state = {
+      documentId: null,
+      section: null,
+      sessionId: null,
+      knowledgePoints: [],
+      currentStep: null,
+      completedPointIds: new Set(),
+    };
+
+    /** 返回与选择器匹配的第一个 DOM 元素。 */
+    const $ = (selector) => document.querySelector(selector);
+
+    /** 创建可选类名和文本内容的 DOM 元素，避免拼接不可信 HTML。 */
+    function node(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+
+    /** 发起 API 请求，并将服务端错误和追踪 ID 转换为可读异常。 */
+    async function request(url, options = {}) {
+      const response = await fetch(url, options);
+      let body = null;
+      try { body = await response.json(); } catch (_) { /* empty response */ }
+      if (!response.ok) {
+        const requestId = response.headers.get("x-request-id");
+        const detail = body?.detail || `请求失败（${response.status}）`;
+        throw new Error(requestId ? `${detail}（请求 ID：${requestId}）` : detail);
+      }
+      return body;
+    }
+
+    /** 展示或清空页面级提示消息。 */
+    function message(text, isError = false) {
+      const box = $("#global-message");
+      box.textContent = text;
+      box.className = `notice${isError ? " error" : ""}`;
+      if (!text) box.classList.add("hidden");
+    }
+
+    /** 同步按钮的禁用、加载动画和提示文字。 */
+    function setBusy(button, busy, label) {
+      button.disabled = busy;
+      button.classList.toggle("loading", busy);
+      if (label) button.textContent = label;
+    }
+
+    /** 检查后端是否可达，并更新顶部状态。 */
+    async function loadHealth() {
+      try {
+        await request("/api/health");
+        $("#system-status").textContent = "smolagents 模型服务已配置";
+      } catch (error) {
+        $("#system-status").textContent = "服务连接失败";
+      }
+    }
+
+    /** 刷新文档列表，并保留当前选中态。 */
+    async function loadDocuments(selectedId = null) {
+      const documents = await request("/api/documents");
+      const container = $("#document-list");
+      container.replaceChildren();
+      if (!documents.length) {
+        container.append(node("div", "muted", "还没有上传文档。"));
+        return;
+      }
+      documents.forEach((document) => {
+        const button = node("button", "item");
+        button.type = "button";
+        button.append(node("span", "", document.filename));
+        button.append(node("small", "", `${document.page_count} 页`));
+        if (document.id === (selectedId || state.documentId)) button.classList.add("active");
+        button.addEventListener("click", () => selectDocument(document.id));
+        container.append(button);
+      });
+    }
+
+    /** 切换当前文档、清空旧学习状态并加载章节。 */
+    async function selectDocument(documentId) {
+      state.documentId = documentId;
+      state.section = null;
+      state.sessionId = null;
+      state.currentStep = null;
+      state.completedPointIds = new Set();
+      $("#section-panel").classList.add("hidden");
+      $("#learning-output").classList.add("hidden");
+      $("#empty-state").classList.remove("hidden");
+      await loadDocuments(documentId);
+      const sections = await request(`/api/documents/${documentId}/sections`);
+      const container = $("#section-list");
+      container.replaceChildren();
+      sections.forEach((section) => {
+        const prefix = section.number ? `${section.number} ` : "";
+        const button = node("button", "item", `${prefix}${section.title}`);
+        button.type = "button";
+        button.style.paddingLeft = `${10 + Math.max(0, section.level - 1) * 15}px`;
+        button.title = `第 ${section.start_page}–${section.end_page} 页`;
+        button.addEventListener("click", () => selectSection(section.id, button));
+        container.append(button);
+      });
+      if (!sections.length) container.append(node("div", "muted", "未识别到章节。"));
+    }
+
+    /** 加载章节详情并展示下载入口与安全的纯文本预览。 */
+    async function selectSection(sectionId, button) {
+      document.querySelectorAll("#section-list .item").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      state.section = await request(`/api/sections/${sectionId}`);
+      const download = $("#section-download");
+      download.href = `/api/sections/${encodeURIComponent(sectionId)}/download`;
+      download.download = `${state.section.number ? state.section.number + " " : ""}${state.section.title}.txt`;
+      $("#empty-state").classList.add("hidden");
+      $("#section-panel").classList.remove("hidden");
+      $("#learning-output").classList.add("hidden");
+      $("#section-title").textContent = `${state.section.number ? state.section.number + " " : ""}${state.section.title}`;
+      $("#section-meta").textContent = `PDF 第 ${state.section.start_page}–${state.section.end_page} 页 · 章节识别置信度 ${Math.round(state.section.confidence * 100)}%`;
+      const preview = state.section.content.length > 10000
+        ? state.section.content.slice(0, 10000) + "\n\n[预览仅展示前 10000 个字符]"
+        : state.section.content;
+      $("#section-preview").textContent = preview;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    /** 按完成、当前和待学习三种状态绘制知识地图。 */
+    function renderKnowledgeMap(currentPointId = null) {
+      const points = $("#knowledge-points");
+      points.replaceChildren();
+      state.knowledgePoints.forEach((point, index) => {
+        const card = node("article", "kp-card");
+        let status = "待学习";
+        if (state.completedPointIds.has(point.id)) {
+          card.classList.add("done");
+          status = "已完成检查";
+        } else if (point.id === currentPointId) {
+          card.classList.add("current");
+          status = "正在学习";
+        } else {
+          card.classList.add("locked");
+        }
+        card.append(node("strong", "", `${index + 1}. ${point.name}`));
+        card.append(node("p", "muted", status));
+        const metadata = node("div");
+        metadata.append(node("span", "pill", `难度 ${point.difficulty}`));
+        card.append(metadata);
+        points.append(card);
+      });
+    }
+
+    /** 接收备课结果并初始化新的前端学习会话。 */
+    function renderPackage(pkg) {
+      state.sessionId = pkg.session_id;
+      state.knowledgePoints = pkg.knowledge_points;
+      state.completedPointIds = new Set();
+      renderStep(pkg.current_step, pkg.progress);
+      $("#learning-output").classList.remove("hidden");
+      $("#learning-output").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    /** 渲染单个教学步骤及其全部理解检查题。 */
+    function renderStep(step, progress) {
+      state.currentStep = step;
+      renderKnowledgeMap(step.knowledge_point.id);
+      $("#lesson-eyebrow").textContent = `第 ${step.position} 步 · 当前知识点`;
+      $("#lesson-title").textContent = step.lesson.title;
+      $("#lesson-text").textContent = step.lesson.explanation;
+      $("#lesson-example").textContent = step.lesson.example;
+      $("#lesson-source").textContent = `原文依据：PDF 第 ${step.lesson.source_pages.join("、")} 页`;
+
+      const questions = $("#questions");
+      questions.replaceChildren();
+      const stepActions = node("div", "actions");
+      step.questions.forEach((question, index) => {
+        questions.append(renderQuestion(question, index, step.questions.length, stepActions));
+      });
+      questions.append(stepActions);
+      renderProgress(progress);
+      $("#lesson-title").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    /** 创建一道题目的作答、提示、反馈和步骤推进交互。 */
+    function renderQuestion(question, index, total, stepActions) {
+      const wrapper = node("article", "question");
+      wrapper.append(node("div", "muted", `第 ${index + 1} / ${total} 题`));
+      wrapper.append(node("div", "question-title", question.question));
+      wrapper.append(node("div", "muted", `难度 ${question.difficulty} · 原文第 ${question.source_pages.join("、")} 页`));
+      const textarea = node("textarea");
+      textarea.placeholder = "输入你的回答…";
+      wrapper.append(textarea);
+      const actions = node("div", "actions");
+      const submit = node("button", "primary", "提交答案");
+      submit.type = "button";
+      const hint = node("button", "ghost", "查看提示");
+      hint.type = "button";
+      let usedHint = false;
+      const hintBox = node("div", "notice hidden");
+      const feedback = node("div", "hidden");
+      const correction = node("div", "correction hidden");
+      const questionStatus = node("div", "muted");
+
+      hint.addEventListener("click", () => {
+        usedHint = true;
+        hintBox.textContent = question.hints.join(" → ") || "请先回到原文寻找关键定义。";
+        hintBox.classList.remove("hidden");
+      });
+      submit.addEventListener("click", async () => {
+        if (!textarea.value.trim()) return;
+        setBusy(submit, true, "评估中");
+        let submitted = false;
+        try {
+          const result = await request(`/api/questions/${question.id}/attempts`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              user_id: $("#user-id").value.trim() || "default-user",
+              answer: textarea.value.trim(),
+              used_hint: usedHint,
+            }),
+          });
+          feedback.className = `feedback ${result.assessment.is_correct ? "good" : "warn"}`;
+          feedback.textContent = `得分 ${Math.round(result.assessment.score * 100)}%：${result.assessment.feedback}`;
+          correction.textContent = `纠错与巩固：${result.assessment.correction}`;
+          correction.classList.remove("hidden");
+          renderProgress(result.progress);
+          textarea.disabled = true;
+          hint.disabled = true;
+          submit.disabled = true;
+          submitted = true;
+
+          if (!result.step_completed) {
+            questionStatus.textContent = `本知识点还需完成 ${result.remaining_questions} 道题。`;
+          } else {
+            state.completedPointIds.add(state.currentStep.knowledge_point.id);
+            renderKnowledgeMap();
+            stepActions.replaceChildren();
+          }
+
+          if (result.step_completed && result.has_next) {
+            const next = node("button", "secondary", "继续下一个知识点");
+            next.type = "button";
+            next.addEventListener("click", async () => {
+              setBusy(next, true, "正在根据学习情况调整下一步");
+              try {
+                const nextResult = await request(`/api/sessions/${state.sessionId}/next`, {
+                  method: "POST",
+                });
+                if (nextResult.current_step) {
+                  renderStep(nextResult.current_step, nextResult.progress);
+                }
+              } catch (error) {
+                feedback.className = "feedback warn";
+                feedback.textContent = error.message;
+                setBusy(next, false, "继续下一个知识点");
+              }
+            });
+            stepActions.append(next);
+          } else if (result.completed) {
+            stepActions.append(node("div", "feedback good", "本章知识点已逐步学习完成。"));
+          }
+        } catch (error) {
+          feedback.className = "feedback warn";
+          feedback.textContent = error.message;
+        } finally {
+          if (!submitted) setBusy(submit, false, "提交答案");
+        }
+      });
+      actions.append(submit, hint);
+      wrapper.append(actions, hintBox, feedback, correction, questionStatus);
+      return wrapper;
+    }
+
+    /** 将掌握度记录渲染为名称、百分比和进度条。 */
+    function renderProgress(records) {
+      const container = $("#progress");
+      container.replaceChildren();
+      if (!records.length) {
+        container.append(node("div", "muted", "还没有学习记录。"));
+        return;
+      }
+      records.forEach((record) => {
+        const row = node("div", "progress-row");
+        const head = node("div", "progress-head");
+        head.append(node("strong", "", record.knowledge_point_name));
+        head.append(node("span", "", `${Math.round(record.mastery_score * 100)}% · ${record.status}`));
+        const bar = node("div", "bar");
+        const fill = node("span");
+        fill.style.width = `${Math.round(record.mastery_score * 100)}%`;
+        bar.append(fill);
+        row.append(head, bar);
+        if (record.misconceptions.length) {
+          row.append(node("div", "muted", `待改进：${record.misconceptions.join("、")}`));
+        }
+        container.append(row);
+      });
+    }
+
+    // 上传成功后直接选中新文档，让学习者继续选择章节。
+    $("#upload-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = event.currentTarget.querySelector("button");
+      const file = $("#pdf-file").files[0];
+      if (!file) return;
+      setBusy(button, true, "解析中");
+      message("");
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const document = await request("/api/documents", { method: "POST", body: form });
+        message(`已解析《${document.filename}》，共 ${document.page_count} 页。`);
+        await selectDocument(document.id);
+      } catch (error) {
+        message(error.message, true);
+      } finally {
+        setBusy(button, false, "上传并解析");
+      }
+    });
+
+    // 根据表单中的学习背景生成第一步课程。
+    $("#prepare-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!state.section) return;
+      const button = $("#prepare-button");
+      setBusy(button, true, "正在分析章节并备课");
+      message("");
+      try {
+        const pkg = await request(`/api/sections/${state.section.id}/prepare`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: $("#user-id").value.trim() || "default-user",
+            learner_level: $("#learner-level").value,
+            learning_goal: $("#learning-goal").value.trim(),
+            difficulty: Number($("#difficulty").value),
+          }),
+        });
+        renderPackage(pkg);
+      } catch (error) {
+        message(error.message, true);
+      } finally {
+        setBusy(button, false, "确认范围并开始备课");
+      }
+    });
+
+    // 页面初始化时并行检查服务状态和已有文档。
+    Promise.all([loadHealth(), loadDocuments()]).catch((error) => message(error.message, true));
+  </script>
+</body>
+</html>
+
