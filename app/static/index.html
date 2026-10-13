@@ -139,6 +139,14 @@
       <div id="section-list" class="section-list">
         <div class="muted">请先选择文档。</div>
       </div>
+
+      <div style="margin-top:24px" class="eyebrow">继续学习</div>
+      <div class="stack" style="margin-top:10px">
+        <label>学习者 ID
+          <input id="restore-user-id" value="default-user" maxlength="100">
+        </label>
+        <button id="restore-button" class="secondary" type="button">恢复最近课程</button>
+      </div>
     </aside>
 
     <!-- 右侧按“确认原文—配置学习—逐步练习”的顺序展示内容。 -->
@@ -231,6 +239,7 @@
       currentStep: null,
       completedPointIds: new Set(),
     };
+    const SESSION_STORAGE_KEY = "learning-agent:last-session";
 
     /** 返回与选择器匹配的第一个 DOM 元素。 */
     const $ = (selector) => document.querySelector(selector);
@@ -271,6 +280,22 @@
       if (label) button.textContent = label;
     }
 
+    /** 保存恢复课程所需的最小标识；教材和答案仍以服务端数据库为准。 */
+    function saveSessionReference() {
+      if (!state.sessionId || !state.documentId || !state.section) return;
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+        sessionId: state.sessionId,
+        documentId: state.documentId,
+        sectionId: state.section.id,
+        userId: $("#user-id").value.trim() || "default-user",
+      }));
+    }
+
+    /** 清除已经失效或被用户主动替换的本地会话指针。 */
+    function clearSessionReference() {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+
     /** 检查后端是否可达，并更新顶部状态。 */
     async function loadHealth() {
       try {
@@ -302,7 +327,8 @@
     }
 
     /** 切换当前文档、清空旧学习状态并加载章节。 */
-    async function selectDocument(documentId) {
+    async function selectDocument(documentId, preserveSession = false) {
+      if (!preserveSession) clearSessionReference();
       state.documentId = documentId;
       state.section = null;
       state.sessionId = null;
@@ -319,6 +345,7 @@
         const prefix = section.number ? `${section.number} ` : "";
         const button = node("button", "item", `${prefix}${section.title}`);
         button.type = "button";
+        button.dataset.sectionId = section.id;
         button.style.paddingLeft = `${10 + Math.max(0, section.level - 1) * 15}px`;
         button.title = `第 ${section.start_page}–${section.end_page} 页`;
         button.addEventListener("click", () => selectSection(section.id, button));
@@ -328,7 +355,11 @@
     }
 
     /** 加载章节详情并展示下载入口与安全的纯文本预览。 */
-    async function selectSection(sectionId, button) {
+    async function selectSection(sectionId, button, preserveSession = false) {
+      if (!preserveSession) clearSessionReference();
+      state.sessionId = null;
+      state.currentStep = null;
+      state.completedPointIds = new Set();
       document.querySelectorAll("#section-list .item").forEach((item) => item.classList.remove("active"));
       button.classList.add("active");
       state.section = await request(`/api/sections/${sectionId}`);
@@ -376,16 +407,18 @@
     function renderPackage(pkg) {
       state.sessionId = pkg.session_id;
       state.knowledgePoints = pkg.knowledge_points;
-      state.completedPointIds = new Set();
-      renderStep(pkg.current_step, pkg.progress);
+      state.completedPointIds = new Set(pkg.completed_knowledge_point_ids || []);
+      renderStep(pkg.current_step, pkg.progress, pkg.completed);
+      saveSessionReference();
       $("#learning-output").classList.remove("hidden");
       $("#learning-output").scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     /** 渲染单个教学步骤及其全部理解检查题。 */
-    function renderStep(step, progress) {
+    function renderStep(step, progress, sessionCompleted = false) {
       state.currentStep = step;
-      renderKnowledgeMap(step.knowledge_point.id);
+      if (step.status === "completed") state.completedPointIds.add(step.knowledge_point.id);
+      renderKnowledgeMap(step.status === "active" ? step.knowledge_point.id : null);
       $("#lesson-eyebrow").textContent = `第 ${step.position} 步 · 当前知识点`;
       $("#lesson-title").textContent = step.lesson.title;
       $("#lesson-text").textContent = step.lesson.explanation;
@@ -399,8 +432,35 @@
         questions.append(renderQuestion(question, index, step.questions.length, stepActions));
       });
       questions.append(stepActions);
+      if (step.status === "completed") renderStepCompletion(stepActions, sessionCompleted);
       renderProgress(progress);
       $("#lesson-title").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    /** 为已完成步骤提供继续按钮，或展示整个章节的完成状态。 */
+    function renderStepCompletion(stepActions, sessionCompleted) {
+      stepActions.replaceChildren();
+      if (sessionCompleted) {
+        stepActions.append(node("div", "feedback good", "本章知识点已逐步学习完成。"));
+        return;
+      }
+      const next = node("button", "secondary", "继续下一个知识点");
+      next.type = "button";
+      next.addEventListener("click", async () => {
+        setBusy(next, true, "正在根据学习情况调整下一步");
+        try {
+          const nextResult = await request(`/api/sessions/${state.sessionId}/next`, {
+            method: "POST",
+          });
+          if (nextResult.current_step) {
+            renderStep(nextResult.current_step, nextResult.progress, nextResult.completed);
+          }
+        } catch (error) {
+          stepActions.append(node("div", "feedback warn", error.message));
+          setBusy(next, false, "继续下一个知识点");
+        }
+      });
+      stepActions.append(next);
     }
 
     /** 创建一道题目的作答、提示、反馈和步骤推进交互。 */
@@ -423,6 +483,26 @@
       const correction = node("div", "correction hidden");
       const questionStatus = node("div", "muted");
 
+      const showAssessment = (assessment) => {
+        feedback.className = `feedback ${assessment.is_correct ? "good" : "warn"}`;
+        feedback.textContent = `得分 ${Math.round(assessment.score * 100)}%：${assessment.feedback}`;
+        correction.textContent = `纠错与巩固：${assessment.correction}`;
+        correction.classList.remove("hidden");
+      };
+
+      if (question.attempt) {
+        textarea.value = question.attempt.answer;
+        textarea.disabled = true;
+        hint.disabled = true;
+        submit.disabled = true;
+        usedHint = question.attempt.used_hint;
+        if (usedHint) {
+          hintBox.textContent = question.hints.join(" → ") || "本题作答时使用了提示。";
+          hintBox.classList.remove("hidden");
+        }
+        showAssessment(question.attempt.assessment);
+      }
+
       hint.addEventListener("click", () => {
         usedHint = true;
         hintBox.textContent = question.hints.join(" → ") || "请先回到原文寻找关键定义。";
@@ -442,10 +522,7 @@
               used_hint: usedHint,
             }),
           });
-          feedback.className = `feedback ${result.assessment.is_correct ? "good" : "warn"}`;
-          feedback.textContent = `得分 ${Math.round(result.assessment.score * 100)}%：${result.assessment.feedback}`;
-          correction.textContent = `纠错与巩固：${result.assessment.correction}`;
-          correction.classList.remove("hidden");
+          showAssessment(result.assessment);
           renderProgress(result.progress);
           textarea.disabled = true;
           hint.disabled = true;
@@ -456,31 +533,12 @@
             questionStatus.textContent = `本知识点还需完成 ${result.remaining_questions} 道题。`;
           } else {
             state.completedPointIds.add(state.currentStep.knowledge_point.id);
+            state.currentStep.status = "completed";
             renderKnowledgeMap();
-            stepActions.replaceChildren();
           }
 
-          if (result.step_completed && result.has_next) {
-            const next = node("button", "secondary", "继续下一个知识点");
-            next.type = "button";
-            next.addEventListener("click", async () => {
-              setBusy(next, true, "正在根据学习情况调整下一步");
-              try {
-                const nextResult = await request(`/api/sessions/${state.sessionId}/next`, {
-                  method: "POST",
-                });
-                if (nextResult.current_step) {
-                  renderStep(nextResult.current_step, nextResult.progress);
-                }
-              } catch (error) {
-                feedback.className = "feedback warn";
-                feedback.textContent = error.message;
-                setBusy(next, false, "继续下一个知识点");
-              }
-            });
-            stepActions.append(next);
-          } else if (result.completed) {
-            stepActions.append(node("div", "feedback good", "本章知识点已逐步学习完成。"));
+          if (result.step_completed) {
+            renderStepCompletion(stepActions, result.completed);
           }
         } catch (error) {
           feedback.className = "feedback warn";
@@ -517,6 +575,36 @@
         }
         container.append(row);
       });
+    }
+
+    /** 根据会话标识选择原章节，并从服务端恢复完整学习状态。 */
+    async function restoreSession(saved) {
+      if (!saved.sessionId || !saved.documentId || !saved.sectionId || !saved.userId) {
+        throw new Error("保存的会话标识不完整");
+      }
+      $("#user-id").value = saved.userId;
+      $("#restore-user-id").value = saved.userId;
+      await selectDocument(saved.documentId, true);
+      const sectionButton = [...document.querySelectorAll("#section-list .item")]
+        .find((item) => item.dataset.sectionId === saved.sectionId);
+      if (!sectionButton) throw new Error("原课程章节已不存在");
+      await selectSection(saved.sectionId, sectionButton, true);
+      const query = new URLSearchParams({ user_id: saved.userId });
+      const pkg = await request(`/api/sessions/${saved.sessionId}?${query}`);
+      renderPackage(pkg);
+      message("已恢复上次课程和答题记录。");
+    }
+
+    /** 根据浏览器保存的标识自动恢复最近一次课程。 */
+    async function restoreSavedSession() {
+      const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (!raw) return;
+      try {
+        await restoreSession(JSON.parse(raw));
+      } catch (error) {
+        clearSessionReference();
+        message(`无法恢复上次课程：${error.message}`, true);
+      }
     }
 
     // 上传成功后直接选中新文档，让学习者继续选择章节。
@@ -566,8 +654,33 @@
       }
     });
 
-    // 页面初始化时并行检查服务状态和已有文档。
-    Promise.all([loadHealth(), loadDocuments()]).catch((error) => message(error.message, true));
+    // 修复上线前的浏览器没有本地标识，可按学习者 ID 查回数据库中的最近课程。
+    $("#restore-button").addEventListener("click", async () => {
+      const button = $("#restore-button");
+      const userId = $("#restore-user-id").value.trim() || "default-user";
+      setBusy(button, true, "正在恢复课程");
+      message("");
+      try {
+        const latest = await request(
+          `/api/users/${encodeURIComponent(userId)}/sessions/latest`
+        );
+        await restoreSession({
+          sessionId: latest.session_id,
+          documentId: latest.document_id,
+          sectionId: latest.section_id,
+          userId,
+        });
+      } catch (error) {
+        message(error.message, true);
+      } finally {
+        setBusy(button, false, "恢复最近课程");
+      }
+    });
+
+    // 页面初始化时先加载公共数据，再恢复最近一次学习会话。
+    Promise.all([loadHealth(), loadDocuments()])
+      .then(() => restoreSavedSession())
+      .catch((error) => message(error.message, true));
   </script>
 </body>
 </html>

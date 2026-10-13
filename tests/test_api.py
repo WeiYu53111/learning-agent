@@ -163,12 +163,22 @@ def test_end_to_end_flow(tmp_path, sample_pdf_bytes: bytes) -> None:
     assert package["current_step"]["position"] == 1
     assert package["current_step"]["knowledge_point"]["name"] == "掌握度"
     assert len(package["current_step"]["questions"]) == 2
+    assert package["current_step"]["status"] == "active"
+    assert package["current_step"]["questions"][0]["attempt"] is None
     assert all(
         "reference_answer" not in question
         for question in package["current_step"]["questions"]
     )
     assert "lesson" not in package
     assert "questions" not in package
+
+    latest_session = client.get("/api/users/student-1/sessions/latest")
+    assert latest_session.status_code == 200
+    assert latest_session.json() == {
+        "session_id": package["session_id"],
+        "document_id": document["id"],
+        "section_id": section_id,
+    }
 
     blocked_next = client.post(f"/api/sessions/{package['session_id']}/next")
     assert blocked_next.status_code == 409
@@ -188,6 +198,23 @@ def test_end_to_end_flow(tmp_path, sample_pdf_bytes: bytes) -> None:
     assert result["remaining_questions"] == 1
     assert result["has_next"] is False
 
+    restored = client.get(
+        f"/api/sessions/{package['session_id']}", params={"user_id": "student-1"}
+    )
+    assert restored.status_code == 200, restored.text
+    restored_package = restored.json()
+    restored_questions = restored_package["current_step"]["questions"]
+    assert restored_questions[0]["attempt"]["answer"] == answer
+    assert restored_questions[0]["attempt"]["assessment"]["score"] == 0.2
+    assert restored_questions[1]["attempt"] is None
+    assert restored_package["completed_knowledge_point_ids"] == []
+    assert restored_package["completed"] is False
+
+    forbidden_restore = client.get(
+        f"/api/sessions/{package['session_id']}", params={"user_id": "other-user"}
+    )
+    assert forbidden_restore.status_code == 403
+
     still_blocked = client.post(f"/api/sessions/{package['session_id']}/next")
     assert still_blocked.status_code == 409
 
@@ -200,6 +227,14 @@ def test_end_to_end_flow(tmp_path, sample_pdf_bytes: bytes) -> None:
     assert second_result["step_completed"] is True
     assert second_result["remaining_questions"] == 0
     assert second_result["has_next"] is True
+
+    restored_step = client.get(
+        f"/api/sessions/{package['session_id']}", params={"user_id": "student-1"}
+    ).json()
+    assert restored_step["current_step"]["status"] == "completed"
+    assert restored_step["completed_knowledge_point_ids"] == [
+        package["current_step"]["knowledge_point"]["id"]
+    ]
 
     next_response = client.post(f"/api/sessions/{package['session_id']}/next")
     assert next_response.status_code == 200, next_response.text
@@ -215,6 +250,14 @@ def test_end_to_end_flow(tmp_path, sample_pdf_bytes: bytes) -> None:
     )
     assert final_attempt.status_code == 200, final_attempt.text
     assert final_attempt.json()["completed"] is True
+
+    restored_completed = client.get(
+        f"/api/sessions/{package['session_id']}", params={"user_id": "student-1"}
+    ).json()
+    assert restored_completed["completed"] is True
+    assert restored_completed["current_step"]["questions"][0]["attempt"]["answer"] == (
+        "延迟后再次检查。"
+    )
 
     progress = client.get("/api/users/student-1/progress")
     assert progress.status_code == 200

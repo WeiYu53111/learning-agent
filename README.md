@@ -28,6 +28,9 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
+项目已包含模型客户端所需的 SOCKS 代理支持；即使终端设置了 `ALL_PROXY`、`HTTPS_PROXY`
+等 SOCKS 地址，也无需额外安装 `socksio`。
+
 打开 <http://127.0.0.1:8000>。
 
 程序启动时会自动读取项目目录中的 `.env`。已经导出的进程环境变量优先于 `.env` 中的同名配置。
@@ -80,12 +83,18 @@ GET  /api/documents/{document_id}/sections
 GET  /api/sections/{section_id}
 GET  /api/sections/{section_id}/download
 POST /api/sections/{section_id}/prepare
+GET  /api/sessions/{session_id}?user_id={user_id}
+GET  /api/users/{user_id}/sessions/latest
 POST /api/questions/{question_id}/attempts
 POST /api/sessions/{session_id}/next
 GET  /api/users/{user_id}/progress
 ```
 
 `prepare` 只生成第一个知识点的讲解和模型认为必要的检查题，不接受人工设置题目数量。当前知识点的题目全部作答后，用户才能确认继续并由客户端调用 `next`；后端会综合这些题目的评估与学习记录生成下一个知识点。重复这一过程，直到本章完成。
+
+浏览器会保存最近一次学习会话的标识。刷新页面后，客户端通过会话查询接口从 SQLite
+恢复已备课程、当前步骤、已提交答案、评估反馈和掌握度；教材与答案本身不会写入浏览器存储。
+修复前创建、尚无浏览器会话标识的课程，可以在页面输入学习者 ID 后点击“恢复最近课程”。
 
 交互式接口文档位于 <http://127.0.0.1:8000/docs>。
 

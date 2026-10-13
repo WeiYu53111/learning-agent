@@ -66,19 +66,6 @@ class Lesson(BaseModel):
     source_pages: list[int]
 
 
-class QuestionPublic(BaseModel):
-    """返回给学习者且隐藏参考答案和评分标准的题目。"""
-
-    id: str
-    session_id: str
-    knowledge_point_ids: list[str]
-    question_type: str
-    difficulty: int
-    question: str
-    hints: list[str]
-    source_pages: list[int]
-
-
 class PrepareLearningRequest(BaseModel):
     """备课接口接收的学习者背景和目标。"""
 
@@ -109,6 +96,28 @@ class Assessment(BaseModel):
     recommended_action: Literal["continue", "retry", "remediate"]
 
 
+class QuestionAttempt(BaseModel):
+    """用于恢复页面的已提交答案及其评估。"""
+
+    answer: str
+    used_hint: bool
+    assessment: Assessment
+
+
+class QuestionPublic(BaseModel):
+    """返回给学习者且隐藏参考答案和评分标准的题目。"""
+
+    id: str
+    session_id: str
+    knowledge_point_ids: list[str]
+    question_type: str
+    difficulty: int
+    question: str
+    hints: list[str]
+    source_pages: list[int]
+    attempt: QuestionAttempt | None = None
+
+
 class MasteryRecord(BaseModel):
     """学习者在单个知识点上的累计掌握状态。"""
 
@@ -130,6 +139,8 @@ class LearningStep(BaseModel):
     id: str
     session_id: str
     position: int
+    status: Literal["active", "completed"]
+    correction: str | None = None
     knowledge_point: KnowledgePoint
     lesson: Lesson
     questions: list[QuestionPublic] = Field(min_length=1)
@@ -143,6 +154,7 @@ class LearningPackage(BaseModel):
     knowledge_points: list[KnowledgePoint]
     current_step: LearningStep
     progress: list[MasteryRecord] = Field(default_factory=list)
+    completed_knowledge_point_ids: list[str] = Field(default_factory=list)
     completed: bool = False
 
 

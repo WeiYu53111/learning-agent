@@ -7,6 +7,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
+  # OpenAI SDK 会自动读取 SOCKS 代理环境变量，因此显式安装对应传输支持。
+  "httpx2[socks]>=2.12,<3",
   "pydantic>=2.8,<3",
   "pymupdf>=1.24,<2",
   "python-dotenv>=1.0,<2",

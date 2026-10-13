@@ -282,6 +282,55 @@ def create_app(
             progress=[MasteryRecord.model_validate(item) for item in progress],
         )
 
+    @app.get("/api/sessions/{session_id}", response_model=LearningPackage)
+    def restore_learning_session(
+        session_id: str,
+        user_id: Annotated[str, Query(min_length=1, max_length=100)],
+    ) -> LearningPackage:
+        """从持久化记录恢复课程、当前步骤、历史答案和掌握度。"""
+
+        try:
+            session = repository.get_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if session["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="学习者与当前会话不匹配。")
+
+        step = repository.get_active_step(session_id) or repository.get_latest_step(
+            session_id
+        )
+        if not step:
+            raise HTTPException(status_code=409, detail="学习会话还没有可恢复的课程。")
+
+        section = repository.get_section(session["section_id"])
+        points = repository.list_knowledge_points(session["section_id"])
+        progress = repository.get_progress(user_id, session["section_id"])
+        return LearningPackage(
+            session_id=session_id,
+            section=SectionSummary.model_validate(section),
+            knowledge_points=[KnowledgePoint.model_validate(point) for point in points],
+            current_step=LearningStep.model_validate(step),
+            progress=[MasteryRecord.model_validate(item) for item in progress],
+            completed_knowledge_point_ids=(
+                repository.list_completed_knowledge_point_ids(session_id)
+            ),
+            completed=session["status"] == "completed",
+        )
+
+    @app.get("/api/users/{user_id}/sessions/latest")
+    def get_latest_session_reference(user_id: str) -> dict[str, str]:
+        """返回学习者最近课程的恢复标识，兼容修复前创建的会话。"""
+
+        try:
+            session = repository.get_latest_session(user_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "session_id": session["id"],
+            "document_id": session["document_id"],
+            "section_id": session["section_id"],
+        }
+
     @app.post("/api/sessions/{session_id}/next", response_model=NextStepResult)
     async def next_learning_step(session_id: str) -> NextStepResult:
         """根据最近评估生成下一知识点，或在无剩余内容时结束会话。"""

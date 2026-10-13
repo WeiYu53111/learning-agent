@@ -182,6 +182,22 @@ class Repository:
             raise KeyError("学习会话不存在。")
         return dict(row)
 
+    def get_latest_session(self, user_id: str) -> dict[str, Any]:
+        """读取学习者最近创建的会话及其文档标识。"""
+
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT s.*, sec.document_id
+                   FROM learning_sessions s
+                   JOIN sections sec ON sec.id = s.section_id
+                   WHERE s.user_id = ?
+                   ORDER BY s.created_at DESC LIMIT 1""",
+                (user_id,),
+            ).fetchone()
+        if not row:
+            raise KeyError("该学习者还没有可恢复的课程。")
+        return dict(row)
+
     def replace_knowledge_points(
         self, section_id: str, points: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
@@ -495,8 +511,20 @@ class Repository:
                 (session_id,),
             )
 
+    def list_completed_knowledge_point_ids(self, session_id: str) -> list[str]:
+        """按教学顺序列出会话中已经完成检查的知识点。"""
+
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT knowledge_point_id FROM learning_steps
+                   WHERE session_id = ? AND status = 'completed'
+                   ORDER BY position""",
+                (session_id,),
+            ).fetchall()
+        return [str(row["knowledge_point_id"]) for row in rows]
+
     def _learning_step(self, item: dict[str, Any]) -> dict[str, Any]:
-        """为步骤记录加载并组装全部关联实体。"""
+        """组装步骤关联实体，并附加该会话学习者已有的答题记录。"""
 
         with self.database.connect() as connection:
             lesson_row = connection.execute(
@@ -508,15 +536,36 @@ class Repository:
                    WHERE sq.step_id = ? ORDER BY sq.position""",
                 (item["id"],),
             ).fetchall()
+            attempt_rows = connection.execute(
+                """SELECT a.question_id, a.answer, a.used_hint, a.assessment_json
+                   FROM attempts a
+                   JOIN learning_sessions s ON s.id = ? AND s.user_id = a.user_id
+                   JOIN learning_step_questions sq ON sq.question_id = a.question_id
+                   WHERE sq.step_id = ?""",
+                (item["session_id"], item["id"]),
+            ).fetchall()
             point_row = connection.execute(
                 "SELECT * FROM knowledge_points WHERE id = ?", (item["knowledge_point_id"],)
             ).fetchone()
         if not lesson_row or not question_rows or not point_row:
             raise KeyError("学习步骤关联的数据不存在。")
+        attempts = {
+            row["question_id"]: {
+                "answer": row["answer"],
+                "used_hint": bool(row["used_hint"]),
+                "assessment": _loads(row["assessment_json"], {}),
+            }
+            for row in attempt_rows
+        }
+        questions = []
+        for row in question_rows:
+            question = self._question(dict(row))
+            question["attempt"] = attempts.get(question["id"])
+            questions.append(question)
         return {
             **item,
             "lesson": self._lesson(dict(lesson_row)),
-            "questions": [self._question(dict(row)) for row in question_rows],
+            "questions": questions,
             "knowledge_point": self._knowledge_point(dict(point_row)),
         }
 
