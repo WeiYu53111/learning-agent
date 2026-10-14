@@ -126,3 +126,8 @@ data/
 
 这套规则便于解释和测试，后续可以替换成 Bayesian Knowledge Tracing 等正式模型。
 
+## 实现文档
+
+详细的实现梳理（架构与完整流程、备课与模型调用、LLM 请求参数、数据模型、设计权衡）见
+[docs/implementation.md](docs/implementation.md)。
+
