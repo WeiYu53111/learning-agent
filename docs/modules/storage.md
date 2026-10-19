@@ -6,6 +6,7 @@
 
 ```text
 data-v2/
+  writer.lock
   learning.db
   documents/<sha256>.pdf
   staging/<operation-id>.part
@@ -14,6 +15,10 @@ data-v2/
 ```
 
 路径以配置的 data_dir 为根解析。用户输入只用于读取源 PDF，内部写入名由程序生成，不使用上传名称拼接路径。启动时校验可写性；只读命令不初始化模型客户端。
+
+同一规范化数据目录只允许一个写进程。所有写命令、初始化、迁移及交互会话先取得 writer.lock 上的操作系统排他锁，并持有至命令结束。锁覆盖模型等待和用户交互，但不等于持有数据库事务。第二写进程立即返回 OPERATION_BUSY；只读查询使用已提交快照，不争抢写锁。
+
+锁适配器必须覆盖 Windows 和 POSIX，并归一化路径与符号链接/目录联接指向；不能仅凭锁文件存在或 PID 存活判定持锁。操作系统在进程结束时释放锁，保留的 writer.lock 文件不表示仍被占用。第一版仅支持本地文件系统，不提供网络共享目录的写锁保证。
 
 ## 2. 核心表与约束
 
@@ -35,25 +40,27 @@ data-v2/
 | source_refs | id、owner_kind、owner_id、chunk_id、start/end、quote | 所有者及引用由仓储校验 |
 | prerequisite_edges | source_objective_id、target_objective_id、kind、status | 三字段唯一、禁止自环 |
 | misconception_definitions | code、knowledge_version_id、description、critical_targets_json | 受控误解目录 |
-| sessions | id、learner_id、knowledge_version_id、lifecycle、phase、resume_phase、revision、current_target_id、active_task_id、updated_at | revision 非负 |
-| session_targets | id、session_id、objective_id、origin、status、position、failure_count、replacement_count、unresolved_count | (session_id, objective_id) UNIQUE |
+| sessions | id、learner_id、knowledge_version_id、lifecycle、phase、resume_phase、revision、current_target_id、active_task_id、needs_replan、updated_at | revision 非负 |
+| session_targets | id、session_id、objective_id、origin、status、position、attempt_count、failure_count、replacement_count、unresolved_count、pending_verification | (session_id, objective_id) UNIQUE |
 | remediation_frames | id、session_id、depth、parent_target_id、prerequisite_target_id、trigger_assessment_id | (session_id, depth) UNIQUE |
 | teaching_decisions | id、session_id、target_id、action、reason_code、evidence_json、policy_version、context_hash | 追加保存 |
 | teaching_tasks | id、session_id、decision_id、target_id、status、content_json | 活动任务唯一索引 |
-| questions | id、task_id、objective_id、novelty_group、question_json、reference_answer、rubric_json、hints_json | task_id UNIQUE，一任务至多一题 |
+| questions | id、task_id、objective_id、novelty_group、question_json、reference_answer、rubric_json、hints_json、targeted_misconception_codes_json | task_id UNIQUE，一任务至多一题 |
 | exposure_events | id、session_id、question_id、kind、hint_level、operation_id、occurred_at | 操作内去重 |
 | attempts | id、question_id、session_id、learner_id、answer、submitted_at、exposure_snapshot_json、current_assessment_id | question_id UNIQUE，原回答不可改 |
-| assessment_revisions | id、attempt_id、revision、status、score、passed、result_json、supersedes_id、rule/model/prompt_versions | (attempt_id, revision) UNIQUE |
+| assessment_revisions | id、attempt_id、revision、status、score、passed、result_json、misconception_results_json、supersedes_id、reason、rule/model/prompt_versions | (attempt_id, revision) UNIQUE |
 | objective_mastery | learner_id、objective_id、score、status、state_json、rule_version、evidence_revision | 复合主键 |
 | learner_projection_revisions | learner_id、revision | learner_id 主键 |
 | misconception_states | learner_id、code、knowledge_version_id、status、evidence_json | 复合主键 |
 | review_items | learner_id、objective_id、stage、due_at、status、last_assessment_id | 同目标一个当前安排 |
-| operations | id、session_id、kind、input_hash、input_refs_json、status、worker_token、lease_until、attempts_used、deadline_at、expected_revision、retry_of、result_ref、error_code | ID 唯一，session_id 可空 |
+| operations | id、session_id、kind、input_hash、input_refs_json、status、execution_id、attempts_used、deadline_at、expected_revision、retry_of、result_ref、error_code | ID 唯一，session_id 可空 |
 | session_events | id、session_id、sequence、operation_id、kind、payload_json、created_at | (session_id, sequence) UNIQUE |
 
 SourceRef 的多态所有者不能仅靠 SQLite 外键保证，UnitOfWork 必须检查 owner 存在且知识版本相同；若实现中改为各对象专属引用关联表，保持相同领域约束。所有对象跨版本一致性均需仓储校验并配合适当复合外键，不能只依赖单个 ID 存在。
 
 objectives.id 表示不可变目标内容版本，不等同维度或知识点稳定身份。版本间关系放 objective_mappings；会话、题目和掌握均引用确切 objective_id。
+
+questions.targeted_misconception_codes_json 引用同知识版本的目录；assessment_revisions.misconception_results_json 保存 code、relation、rubric_keys、answer_spans 和 reason，仓储与契约共同检查引用。误解归约读取当前修订的完整结果，不能只保存支持列表而丢失反驳证据。
 
 ## 3. 数据库强约束与索引
 
@@ -72,25 +79,27 @@ CREATE INDEX idx_attempt_history ON attempts(learner_id, submitted_at, id);
 CREATE INDEX idx_edges_target ON prerequisite_edges(target_objective_id, kind);
 ```
 
-operations 另含可空 session_id，导入批次操作可以为空；同会话一个 running 操作。暂停/取消是对当前操作的控制事务，不需要先创建第二个 running 操作。过期操作须先收回租约再领取，不能靠唯一索引过期后自动失效。
+operations 的 session_id 对导入批次可为空；同会话一个 running 操作。暂停/取消是对当前操作的控制事务，不需要先创建第二个 running 操作。新进程成功取得数据目录写锁后，将遗留 running 操作标为 failed_retryable(interrupted)，再决定恢复或新建显式重试操作，无需租约计时和抢占。
 
 score 可空且非空时在 [0,1]，invalid_question/needs_review 的掌握计分为空。Attempt.current_assessment_id 必须指向自身修订；创建 Attempt 时允许为空。外键循环由同一事务内先插作答、再插修订、最后更新 current 指针解决。
 
-## 4. UnitOfWork 与冲突
+## 4. UnitOfWork 与一致性
 
 SQLite 连接配置启用 foreign_keys、WAL 和 busy_timeout=5000ms；事务短暂占锁。磁盘忙转换为可恢复错误，不能持锁等待网络请求。
 
-写入前使用 BEGIN IMMEDIATE，在事务内检查 session revision、操作 token、lease_until 和 learner projection revision。CAS 更新形如 `UPDATE sessions SET revision=revision+1 ... WHERE id=? AND revision=?`，影响行数为零即回滚整个事务。
+持有数据目录写锁的进程使用 BEGIN IMMEDIATE 开启短事务，在事务内检查 session revision、操作 execution_id 及 running 状态。CAS 更新形如 `UPDATE sessions SET revision=revision+1 ... WHERE id=? AND revision=?`，影响行数为零即回滚整个事务。保留修订检查用于拒绝取消前的迟到结果与过时快照，不引入多进程投影冲突重试。
 
-提交评估时，Assessment、current 指针、目标掌握、误解、复习、反馈事件及会话阶段全部原子写入。原始 Attempt 已在先前短事务保存，即使后续失败也不丢失用户输入。保存 Attempt 时将活动任务改为 submitted；撤销改为 revoked，跳过改为 skipped，均在同一会话事务更新 active_task_id；评估后任务改为 assessed。这样不会遗留占用唯一活动索引的旧任务。
+提交评估时，Assessment、current 指针、目标掌握、误解、复习、结果计数、反馈事件及会话阶段全部原子写入。原始 Attempt 已在先前短事务保存，即使后续失败也不丢失用户输入。保存 Attempt 时原子增加目标 attempt_count 并将活动任务改为 submitted；撤销改为 revoked，跳过改为 skipped，均在同一会话事务更新 active_task_id；评估后任务改为 assessed。这样不会遗留占用唯一活动索引的旧任务，重试也不重复增加总作答数。
 
-跨会话学习者更新使用统一 evidence revision；重算时读取全部当前有效证据并在提交前验证该 revision。所有追加评估和修订必须递增它，防止漏掉并发证据。
+单写进程串行更新学习者证据，所有追加评估和修订递增 evidence_revision，投影记录所用版本。历史修订无论新状态是否 valid，都在同一事务内切换 current 指针、重算掌握/误解/复习、标记相关未结束会话 needs_replan 并记录事件。结果为 unknown 时同步清除不再成立的复习项，不残留旧高分。
+
+新评估候选尚未验证或重算失败时，不切换 current 指针。单次修订影响多目标时整体提交或整体回滚，不能一部分目标显示新分数、另一部分仍使用旧误解状态。
 
 仓储按业务聚合提供 get_snapshot、append_attempt、commit_assessment、commit_task、cancel_operation 等接口；不得由 CLI 任意执行 SQL。只读查询可使用独立连接，模型调用期间释放连接。
 
 ## 5. 文件和发布一致性
 
-导入先流式复制到 staging 并计算哈希，校验成功后原子移动到 documents 的内容寻址路径。同哈希已经存在则复用；并发导入按文档唯一约束收敛。
+导入先流式复制到 staging 并计算哈希，校验成功后原子移动到 documents 的内容寻址路径。同哈希已经存在则复用；所有导入串行持写锁，文档唯一约束额外防止重复入库。
 
 文件移动与数据库事务不能假设为同一原子操作：先确保目标文件存在，再事务写入文档引用；失败留下未引用文件，由显式清理流程处理，不盲删可能被另一次导入引用的文件。损坏临时文件按操作归属回收。
 
@@ -118,4 +127,4 @@ SQLite 连接配置启用 foreign_keys、WAL 和 busy_timeout=5000ms；事务短
 
 升级前用 SQLite backup API 生成一致性备份，不能直接复制仍在 WAL 写入的 db 文件。未知未来 schema 拒绝写入；第一版不实现自动降级。运行时数据目录整体加入 gitignore。
 
-测试验证外键、活动任务唯一性、作答唯一性、修订 current 指针、CAS 回滚、WAL 恢复、租约过期、迁移中断、磁盘错误，以及文件已移动但文档事务失败时的可恢复性。
+测试验证外键、活动任务唯一性、作答唯一性、修订 current 指针、修订为无效时完整撤销、CAS 回滚、WAL 恢复、第二写进程拒绝、进程崩溃释放锁、取消后迟到结果拒绝、迁移中断、磁盘错误，以及文件已移动但文档事务失败时的可恢复性。写锁测试需包含同一目录的不同路径别名。

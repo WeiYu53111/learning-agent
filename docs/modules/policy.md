@@ -18,7 +18,7 @@ TeachingDecision 包含 action、objective_id、reason_code、简短理由、sou
 
 从用户选择的章节/知识点取得 required 目标，展开 required 依赖，形成局部 DAG。目标身份必须来自发布版本。拓扑排序以教材章节顺序、目标顺序和 ID 稳定打破平局，不依赖模型返回顺序。
 
-每个 SessionTarget 保存 origin（requested/prerequisite）、状态（pending/in_progress/satisfied/skipped/blocked/deferred）、进入次数和失败计数。计划保存 requested_scope 与 expanded_scope，报告不能把补基础的进度误算成用户目标全部完成。
+每个 SessionTarget 保存 origin（requested/prerequisite）、状态（pending/in_progress/satisfied/skipped/blocked/deferred）、进入次数、总作答数、失败计数及 pending_verification 标记。讲解或补救完成后设置 pending_verification，新评估提交后清除并按结果重算。计划保存 requested_scope 与 expanded_scope，报告不能把补基础的进度误算成用户目标全部完成。
 
 未知必要前置进入诊断；未过期已达标目标标为 satisfied；过期前置安排 REVIEW。supporting 关系只进入例子和解释上下文。optional 目标只有用户主动选择后才成为本会话 required，不无限扩大学习范围。
 
@@ -31,16 +31,21 @@ TeachingDecision 包含 action、objective_id、reason_code、简短理由、sou
 | 优先级 | 条件 | 决策 |
 |---|---|---|
 | 1 | 暂停、退出或明确跳过 | 尊重用户意图，保存缺口 |
-| 2 | 已达停止预算 | 标记 deferred，要求选择跳过/结束/仅换讲解 |
-| 3 | 当前评估无效 | 换题 REASSESS，不重复原问题 |
-| 4 | 确认必要前置缺口 | REMEDIATE，压入返回目标 |
-| 5 | 关键前置未知或到期 | DIAGNOSE 或 REVIEW |
-| 6 | 当前目标已达标且关键误解解除 | ADVANCE |
-| 7 | 尚未诊断 | DIAGNOSE |
-| 8 | 已知概念缺口 | EXPLAIN 或对比 EXAMPLE |
-| 9 | 原理已懂、应用不足 | EXAMPLE 后 PRACTICE |
-| 10 | 补救后需验证 | REASSESS |
-| 11 | 计划处理完毕 | SUMMARIZE |
+| 2 | 计划全部处理完且无待处理评分 | SUMMARIZE，按缺口决定终态 |
+| 3 | 当前目标及必要前置已达标且无关键误解 | ADVANCE，不被出题预算阻止 |
+| 4 | 未达标且已达停止预算 | 标记 deferred，展示跳过/结束/仅换讲解选项 |
+| 5 | 确认必要前置缺口 | REMEDIATE，压入返回目标 |
+| 6 | 关键前置未知或到期 | DIAGNOSE 或 REVIEW |
+| 7 | 当前目标到期且前置可用 | REVIEW |
+| 8 | 当前评估无效或待复核已结束仍无结论 | 新题 REASSESS |
+| 9 | pending_verification，讲解/补救后尚未验证 | REASSESS，避免再次重复同段讲解 |
+| 10 | 最近独立通过，但有效独立分组不足两组 | 不同分组新题 REASSESS |
+| 11 | 尚无诊断证据 | DIAGNOSE |
+| 12 | 已知概念或原理缺口 | EXPLAIN 或对比 EXAMPLE |
+| 13 | 原理已懂、应用不足 | EXAMPLE 后 PRACTICE |
+| 14 | 其他可教学但尚未达标状态，包括辅助通过、误解待验证 | 针对缺口 PRACTICE；关键误解指定 targeted_misconception_codes |
+
+规则覆盖所有有当前目标的正常状态；结构缺字段、无法定位目标等不是兜底出题条件，应返回 POLICY_STALLED 并暂停。平滑估计不参与 ADVANCE 判断。首次诊断独立通过且无缺口时明确命中第 10 条，不会停在 learning。
 
 表中条件先归并成结构化教学状态，不仅按“总分低”选择动作。评估包含 error_kind：concept/reasoning/application/expression/question_issue/uncertain。表达差异但关键含义正确不能直接触发概念补救；uncertain 优先诊断。
 
@@ -60,7 +65,9 @@ DIAGNOSE、PRACTICE、REASSESS、REVIEW 均生成一个主目标的一道新题�
 
 前置通过后弹出返回帧，回到原目标 REASSESS。前置被跳过时，将依赖目标 blocked，并继续其他独立目标；无可进行项时输出 ended_with_gaps。
 
-每目标每会话累计最多 3 次有效失败，不因返回、刷新、换题而重置。invalid_question 不计失败，但最多替换 2 次；needs_review 连续两次无法解决时暂停目标，不能无上限复核换题。一次逻辑评分操作最多一次独立复核。
+每目标每会话最多提交 8 条不同 Attempt，累计最多 3 次有效失败，不因返回、刷新、换题而重置。总作答数包含辅助、重复场景练习和无效题，重试及改分不新增计数。invalid_question 不计有效失败，但最多替换 2 次；needs_review 连续两次无法解决时暂停目标。一次逻辑评分操作最多一次独立复核。
+
+预算只限制生成下一道评分题，不拒绝处理已经允许提交的回答。先归约最后一次评估并检查达标，再判断预算。例如第 8 次提交形成第二条独立通过时仍正常 ADVANCE；第 8 次辅助通过而证据不足则 deferred。
 
 预算耗尽后“换讲法”只允许展示解释，不再自动发评分题；若希望继续评估，需显式开启新的学习会话，并展示已有失败历史。/skip 保留长期掌握状态，只结束本会话目标尝试。
 
@@ -72,6 +79,8 @@ completed 要求本会话所有 requested required 目标及其必要依赖在�
 
 每次决策保存输入摘要哈希、policy_version、目标状态、触发规则和证据 ID，既支持 `/why`，也用于离线回放。不要求保存模型隐式推理。
 
+ADVANCE 返回 planning 后由应用服务继续调用策略，不返回一个只能等待输入的 planning 视图。内部步必须改变游标、目标状态或返回栈；状态签名（游标、目标状态集合、返回栈、pending_verification）重复或超过 `2 × 目标数 + 8` 步，返回 POLICY_STALLED 并暂停。
+
 ## 7. 测试
 
-用同一知识 DAG 配置三类学习者，检查动作序列确实不同。重点验证规则优先级、共同前置不误降分、返回栈、跳过传播、独立分支继续、预算不重置、用户意图覆盖与完成条件。相同上下文应产生相同结构化决策。
+用同一知识 DAG 配置三类学习者，检查动作序列确实不同。重点验证首次通过后补足证据、纯讲解后进入验证、连续 ADVANCE 到下一题/终态、最后一次允许的提交可达标、总作答预算、规划无进展暂停、共同前置不误降分、返回栈、跳过传播和用户意图覆盖。相同上下文应产生相同结构化决策。

@@ -18,8 +18,8 @@ review_assessment(ReviewInput, CallBudget) -> AssessmentCandidate
 | 能力 | 必需输入 | 禁止或避免输入 |
 |---|---|---|
 | 知识提取 | 原文片段、章节、候选临时 key、提取 schema | 用户学习水平、完整学习历史 |
-| 教学生成 | 当前动作、主目标、rubric、证据、薄弱处、已见题和显式偏好 | 无关历史、其他版本教材 |
-| 回答评估 | 固定题目、原 rubric、原文、原始回答 | 用户历史总分、模型预期用户能力 |
+| 教学生成 | 当前动作、主目标、rubric、证据、待验证误解码、已见题和显式偏好 | 无关历史、其他版本教材 |
+| 回答评估 | 固定题目、原 rubric、原文、原始回答、题目针对的误解定义 | 用户历史总分、模型预期用户能力 |
 | 独立复核 | 同样的题目、rubric、原文和回答、冲突字段名 | 第一轮结论和分数，避免锚定 |
 
 评估不输入用户画像，避免“过去答得好所以这次也判对”。提示与答案暴露由程序用于证据分类，不能让模型自行推断是否独立。
@@ -38,10 +38,14 @@ points[]:
     rubric_items[]: key, description, critical, weight, source_refs[]
     suggested_question_types[], source_refs[]
 edges[]: prerequisite_temp_key, dependent_temp_key, kind, source_refs[]
+misconceptions[]:
+  temp_key, description, related_objective_keys[], critical_objective_keys[], source_refs[]
 coverage: processed_chunk_ids[], unresolved_items[]
 ```
 
 权重为正，题目 rubric 权重合计必须为 1，允许浮点误差 1e-6。知识目标 rubric 表达达标要点；具体题目可以细化，但不能改变该目标的关键能力要求。模型缺少依据时输出 unresolved，而不是补造引用。
+
+误解定义与目标一并经过知识质量校验和发布，由程序分配版本内受控 code。提取出的候选不能直接标记某个用户存在误解；用户状态只能来自有效作答证据。
 
 ### 教学任务
 
@@ -51,13 +55,16 @@ question?:
   stem, question_type, difficulty
   reference_answer, rubric_items[], hints[]
   scenario_summary, suggested_novelty_group, source_refs[]
+  targeted_misconception_codes[]
 ```
 
-问题型动作必须有 question，解释型动作允许附一道检查题；ADVANCE/SUMMARIZE 不走教学内容生成接口。objective_id 和 action 必须与输入相等。question 不包含模型生成的数据库 ID。
+问题型动作必须有 question，解释型动作允许附一道检查题；应用输入 question_mode=forbidden 时必须无 question（用于用户主动讲解或预算耗尽），required 时必须有一道题，optional 时允许零或一道。ADVANCE/SUMMARIZE 不走教学内容生成接口。objective_id 和 action 必须与输入相等。question 不包含模型生成的数据库 ID。
 
 rubric_items 包含 key、description、critical、weight、reference_points 和来源。hints 最多 3 级，由轻提示到具体引导，不能直接输出标准答案；若提示实际暴露答案，需在审核中标记相应暴露级别。
 
 模型建议的新颖性分组须与历史场景比较后由程序确认。题目不因分组字符串不同就被视为新题。
+
+targeted_misconception_codes 必须是输入允许的同版本误解码，正常题可为空；策略要求验证的码必须包含，且 rubric 中必须有区分该误解的关键要点。无法设计可靠题目时报告生成失败，不用空数组绕过解除验证。
 
 ### 回答评估
 
@@ -68,6 +75,9 @@ item_results[]:
   answer_spans[]: start, end, quote
   reason, issue?
 error_kind: concept | reasoning | application | expression | question_issue | uncertain
+misconception_results[]:
+  code, relation: supports | refutes | inconclusive
+  rubric_keys[], answer_spans[], reason
 misconception_candidates[]: code?, description, supporting_spans[]
 feedback, correction?, question_issue?
 ```
@@ -77,6 +87,10 @@ feedback, correction?, question_issue?
 回答区间引用必须匹配原始回答；未出现的要点可以标 missing，无须伪造摘录。合理同义表达允许 credit=1。valid 必须给出每个 rubric 项恰好一条结果；重复、漏项或未知 key 拒绝。credit=0 的缺失项允许空 spans，已覆盖项应有回答证据。
 
 invalid_question 必须解释题目问题，score 为 null；needs_review 不写入数值掌握。语义判断无法完全由格式验证保证，固定人工评估集用于检测系统性误判。
+
+每个 targeted_misconception_code 必须恰有一个 misconception_results 项；未涉及的受控码可以额外返回 supports，但不可返回 refutes。rubric_keys 和回答区间必须有效，supports/refutes 要有支持结论的证据；无法区分时必须 inconclusive，不根据“答案正确”补造反驳。
+
+refutes 只有在评估 valid、题目针对该码且整题独立通过时才由学习者模块计数；网关不知道提示展示历史，不能自己宣布误解解除。未知误解继续放入 candidates，未经目录确认不得冒充受控码。
 
 ## 4. 校验流程
 

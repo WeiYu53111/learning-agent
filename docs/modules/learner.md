@@ -13,7 +13,7 @@ plan_review(projection, review_history, as_of) -> ReviewProjection
 explain_mastery(objective_id) -> EvidenceSummary
 ```
 
-计算函数是纯函数，时间 as_of 显式传入，便于回放。应用服务负责读历史、提交结果和并发检查。投影保留 consumed_assessment_ids、rule_version 与 evidence_revision，能够说明依据。
+计算函数是纯函数，时间 as_of 显式传入，便于回放。应用服务在单写进程内负责读取历史和原子提交。投影保留 consumed_assessment_ids、rule_version 与 evidence_revision，能够说明依据并发现使用了过时快照。
 
 ## 2. 证据分类
 
@@ -38,17 +38,19 @@ explain_mastery(objective_id) -> EvidenceSummary
 
 辅助回答只影响数值，不能清除补救标记。无效题不打开补救、不清空通过计数。practice_only 不影响任何通过/失败计数。
 
-状态计算顺序：无可计分证据为 unknown；补救标记或确认误解为 needs_remediation；达到初步掌握门槛后根据到期时间区分 provisionally_mastered/review_due；其他为 learning。未知估计为 null，不保存伪造的零分。
+状态计算顺序：无可计分证据为 unknown；补救标记或确认误解为 needs_remediation；最近独立失败之后已有两个不同分组独立通过，则根据到期时间区分 provisionally_mastered/review_due；其他为 learning。趋势估计不参与状态判断。未知估计为 null，不保存伪造的零分。
 
-例如独立 1.0、独立 1.0 后初步掌握；随后独立 0.0，估计降为 0.6 并进入补救。后续独立 1.0、1.0 得到 0.76、0.856，第二次新场景通过后重新达到数值与证据门槛。
+例如独立 1.0、独立 1.0 后初步掌握；随后独立 0.0，估计降为 0.6 并进入补救。后续独立 1.0、1.0 得到 0.76、0.856，第二次新场景通过后重新满足证据门槛。另一序列 0、0.8、0.8（后两题全部关键项通过）也在第三题初步掌握，即使趋势估计只有 0.512。
 
 ## 4. 误解生命周期
 
 误解码属于知识版本中的受控目录，模型不能将临时自由文本直接存为永久标签。新候选误解附描述和回答摘录，先保存候选，不自动影响长期状态。
 
-一个场景的有效支持证据产生 suspected；两个不同场景确认后为 confirmed。解除必须由明确考查该误解的题目标记 refutes_code，且两道新场景独立通过。普通题答对不能默认解除所有误解。
+题目保存 `targeted_misconception_codes`，评估保存 `misconception_results[] = {code, relation, rubric_keys, answer_spans, reason}`，relation 为 supports/refutes/inconclusive。code 必须属于本知识版本目录，rubric_keys 必须属于当前题；未知码作为候选保存，不能进入受控状态归约。
 
-同一证据若支持和反驳冲突进入复核。已解决误解再次出现时重新打开，重新累计本轮支持证据，保留过去的确认与解除时间。
+一个场景的有效 supports 证据产生 suspected；两个不同场景确认后为 confirmed。refutes 只在 code 属于题目 targeted_misconception_codes、评估 valid、整题独立通过且有对应 rubric 和回答证据时有效；同一轮误解至少两道不同新场景满足该条件后转 resolved。普通题通过、assisted、practice_only 和 quarantined 均不增加解除计数。
+
+同一评估每个 code 恰好一个结果；同时支持和反驳或证据不一致进入复核。每条新的有效 supports 重置该码的当前解除组计数，inconclusive 不增减计数。已解决误解再次出现时重新打开，重新累计本轮支持证据，保留过去的确认与解除时间。
 
 误解涉及多个目标时，只有被确认且标记 critical 的关联目标打开补救。一个应用题错误不能自动降低所有前置目标掌握；策略可以要求诊断前置，等待新证据。
 
@@ -58,7 +60,7 @@ explain_mastery(objective_id) -> EvidenceSummary
 
 到期是查询时根据 as_of 派生的状态，无需后台定时任务。`teach review` 默认按必要依赖拓扑顺序、due_at、objective_id 排序。同一个目标只保留一个当前待复习项。
 
-有效独立复习通过可沿用已有掌握证据，若数值仍 ≥ 0.8 且无补救/误解则推进间隔；失败立即退出复习达标，打开补救。辅助通过不推进间隔，仍等待独立复测。
+有效独立复习通过可沿用已有掌握证据，无新的补救或关键误解时推进间隔，不检查平滑趋势分数；失败立即退出复习达标，打开补救。辅助通过不推进间隔，仍等待独立复测。
 
 失败后重新达到初步掌握条件时将间隔重置为 1 天。歧义题、无效题和失败模型请求不修改到期日。历史评分修订后依据有效时间线重建 due_at，不使用“重算发生时间”重置复习。
 
@@ -72,6 +74,8 @@ Progress 按版本分别报告 required_total、verified、review_due、learning
 
 ## 7. 修订与测试
 
-修订评分时重建该用户目标时间线，以及受影响误解关联的目标投影。提交需检查统一 learner evidence_revision，避免并发新证据丢失。已完成会话历史不改写，当前报告标明状态由新评估更新。
+修订评分时重建该用户目标时间线，以及受影响误解关联的目标投影。无论新修订是 valid、needs_review 还是 invalid_question，都先替换归约输入中的旧修订再重放；后两类移除旧分数、通过和误解影响，不是保持旧投影不变。若已无有效证据，回到 unknown、估计 null，并取消失去依据的当前复习安排。
 
-测试使用可手算证据序列，验证乱序修订、辅助不解除补救、同场景不重复计数、无效证据隔离、误解解除、复习时钟、跨目标隔离与完整重放一致性。
+提交在单写进程的一个事务内切换 current 指针并递增 learner evidence_revision，所有受影响投影记录新版本。已完成会话历史不改写，当前报告标明状态由新评估更新。未结束会话的目标缓存标记需重新计算，下一次继续时依据新投影更新 satisfied/blocked 等派生状态。
+
+测试使用可手算证据序列，验证 0→0.8→0.8 达标、乱序修订、valid→invalid_question/needs_review 撤销影响、辅助不解除补救、同场景不重复计数、普通通过不解除误解、两次有针对性反驳解除误解、复习时钟、跨目标隔离与完整重放一致性。
