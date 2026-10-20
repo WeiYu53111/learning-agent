@@ -13,7 +13,8 @@ from teaching_agent.models import AppError, Audit
 from teaching_agent.storage import SCHEMA, Store
 
 
-def test_registry_legacy_env_and_no_secret_in_snapshot(monkeypatch):
+def test_registry_legacy_env_and_no_secret_in_snapshot(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TEACH_API_KEY", "secret-test")
     monkeypatch.setenv("TEACH_MODEL", "model-test")
     monkeypatch.setenv("TEACH_REQUEST_TIMEOUT", "37")

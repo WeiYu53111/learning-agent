@@ -81,6 +81,46 @@ def parser():
     return root
 
 
+def list_drafts(app):
+    rows = app.store.rows("SELECT * FROM versions ORDER BY created_at DESC,id DESC")
+    if not rows:
+        print("暂无草稿。请先导入教材，再选择章节生成草稿。")
+        return
+    print(f"共 {len(rows)} 个内容版本（含已发布版本，按创建时间从新到旧）：")
+    for row in rows:
+        book = app.book(row["book_id"])
+        section_id, _, page_range = row["section_id"].partition("@")
+        section = next(s for s in book.sections if s.id == section_id)
+        pages = page_range.replace(":", "–") or f"{section.start_page}–{section.end_page}"
+        status = "草稿"
+        detail = "尚未执行模型审核"
+        command = f"audit {row['id']}"
+        if row["status"] == "published":
+            status, detail = "已发布", "可以开始学习"
+            command = f"start {row['id']}"
+        elif row["data"] == "{}":
+            detail = "提取尚未完成，可继续"
+            command = f"draft --resume {row['id']}"
+        elif row["approved_revision"] == row["revision"]:
+            detail = "人工已确认，等待发布"
+            command = f"publish {row['id']}"
+        elif row["reviewed_revision"] == row["revision"] and row["audit"]:
+            audit = Audit.model_validate_json(row["audit"])
+            decisions = json.loads(row["decisions"])
+            unresolved = sum(
+                issue.severity == "error" and str(i) not in decisions
+                for i, issue in enumerate(audit.issues)
+            )
+            warnings = sum(issue.severity == "warning" for issue in audit.issues)
+            detail = f"待人工审核：{unresolved} 项错误待处理，{warnings} 项建议"
+            command = f"review {row['id']}"
+        print(f"\n教材：{book.filename}" + ("（离线演示教材）" if book.demo else ""))
+        print(f"章节：{section.title} · PDF 第 {pages} 页")
+        print(f"状态：{status} · 第 {row['revision']} 次修订 · {detail}")
+        print(f"版本 ID：{row['id']}")
+        print(f"下一步：teach {command}")
+
+
 def inspect(app, identifier):
     row, book, chunks = app.version(identifier)
     print(f"\n版本 {identifier} | {row['status']} | 修订 {row['revision']} | {book.filename}")
@@ -322,11 +362,7 @@ def dispatch(app, args):
         inspect(app, identifier)
         print(f"下一步：teach audit {identifier}，然后 teach review {identifier}")
     elif command == "drafts":
-        for row in app.store.rows("SELECT id,book_id,section_id,status,revision FROM versions"):
-            print(
-                f"{row['id']} | {row['book_id']}/{row['section_id']} | "
-                f"{row['status']} r{row['revision']}"
-            )
+        list_drafts(app)
     elif command == "inspect":
         inspect(app, args.version)
     elif command == "source":

@@ -97,8 +97,8 @@ def check_refs(refs: list[Ref], chunks: dict[str, Chunk]) -> list[str]:
         chunk = chunks.get(ref.chunk_id)
         if not chunk or ref.quote not in chunk.text:
             errors.append(f"无效引用：{ref.chunk_id} / {ref.quote[:35]}")
-        elif chunk.text.count(ref.quote) != 1:
-            errors.append(f"引用不唯一，请提供更长原文：{ref.chunk_id}")
+        elif chunk.text.find(ref.quote) != chunk.text.rfind(ref.quote):
+            errors.append(f"引用不唯一，请提供更长原文：{ref.chunk_id} / {ref.quote[:80]!r}")
     return errors
 
 

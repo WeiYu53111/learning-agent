@@ -171,11 +171,44 @@ class Application:
                 partial = Draft.model_validate_json(cached[position])
             else:
                 gateway = self.gateway(book, identifier)
-                partial = gateway.extract(batch)
-                # Keep invalid candidates editable, but do not cache broken references.
+                rejected = self.store.rows(
+                    "SELECT data FROM events WHERE owner_id=? AND kind='batch_rejected' "
+                    "ORDER BY id DESC",
+                    (identifier,),
+                )
+                previous = next(
+                    (
+                        json.loads(r["data"])
+                        for r in rejected
+                        if json.loads(r["data"])["position"] == position
+                    ),
+                    None,
+                )
+                partial = (
+                    Draft.model_validate(previous["candidate"])
+                    if previous
+                    else gateway.extract(batch)
+                )
                 report = quality_report(partial, batch)
                 if report["errors"]:
-                    raise AppError("本批提取未通过校验，可重试：" + "；".join(report["errors"][:4]))
+                    self.save_rejected_batch(identifier, position, partial, report, gateway.model)
+                    partial = gateway.revise(
+                        partial,
+                        batch,
+                        "修复以下程序校验错误，返回完整草稿。仅修改有问题的引用及必要关联；"
+                        "不要重写无关目标。引用必须逐字匹配且在对应chunk内唯一；"
+                        "有重复时扩展连续原文上下文（保留换行），不要猜测第一次出现的位置，"
+                        "也不要删掉目标或内容清单来绕过检查。\n" + "\n".join(report["errors"]),
+                    )
+                    report = quality_report(partial, batch)
+                    if report["errors"]:
+                        self.save_rejected_batch(
+                            identifier, position, partial, report, gateway.model
+                        )
+                        raise AppError(
+                            "本批自动校正后仍未通过校验；候选已保存，恢复时继续校正："
+                            + "；".join(report["errors"][:4])
+                        )
                 with self.store.connect() as conn:
                     conn.execute(
                         "INSERT INTO draft_batches VALUES(?,?,?)",
@@ -218,6 +251,20 @@ class Application:
         if len(partials) > 1:
             combined["notes"].append("多批提取：请人工检查跨批重复和前置关系。")
         self.save_draft(identifier, Draft.model_validate(combined), "分批提取完成")
+
+    def save_rejected_batch(self, identifier, position, partial, report, model):
+        with self.store.connect() as conn:
+            self.store.event(
+                conn,
+                identifier,
+                "batch_rejected",
+                {
+                    "position": position,
+                    "candidate": partial.model_dump(),
+                    "errors": report["errors"],
+                    "model": model,
+                },
+            )
 
     def save_draft(self, identifier, draft: Draft, reason):
         row, _, _ = self.version(identifier)

@@ -27,6 +27,8 @@ CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当�
 
 全局参数 `--config PATH`、`--backend NAME`、`--env-file PATH`、`--data-dir PATH` 放在子命令之前。CLI 仅把配置路径和显式选择传给 BackendRegistry；绑定优先级由应用执行。start/resume 展示所选后端、类型和配置模型，默认值明确显示“后端默认”。
 
+`drafts` 面向人工选择，按创建时间从新到旧，以教材文件名、章节标题和实际选定 PDF 页范围为首要信息。状态使用中文，区分未完成提取、待模型审核、待人工审核、已确认待发布和已发布；审核摘要显示尚未处理的 error 数及 warning 数。每条保留完整版本 ID，并给出下一步可复制命令，演示教材单独标注。列表不调用模型，也不改变审核或发布状态。
+
 Codex 需要代理时，在启动 teach 的同一终端设置 `HTTP_PROXY/HTTPS_PROXY`，或使用显式环境文件。CLI 不代为登录、不回显提供方完整错误；认证失效提示用户在 Codex 中修正后恢复。选择后端错误不自动换服务。配置示例见[后端说明](../backends.md)。
 
 最近会话按 updated_at 降序选择 active/paused。多个未结束会话先列候选，要求指定 ID；completed/ended_with_gaps 默认只读展示，需要继续学习则开启新会话。
