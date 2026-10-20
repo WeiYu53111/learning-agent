@@ -46,7 +46,7 @@ teach demo
 ```powershell
 .\.venv\Scripts\Activate.ps1
 
-# 只在首次使用时复制，保留已有配置中的模型和超时设置
+# 仓库已提供 teach.toml；仅文件缺失时从模板恢复
 if (-not (Test-Path teach.toml)) {
     Copy-Item teach.toml.example teach.toml
 }
@@ -61,7 +61,7 @@ $env:HTTPS_PROXY = "http://127.0.0.1:7897"
 
 代理地址是本机示例，其他电脑应按实际代理设置。也可以写入本地 `.env.cli`，启动时显式传入 `--env-file .env.cli`；程序不会自动读取 `.env`。Codex 继承 teach 的进程环境，teach 不管理账户或复制凭据。
 
-确认 `teach.toml` 中包含以下配置。模板默认超时为 180 秒；本次实际使用中，较长提取出现超时后将本地配置调整为 600 秒：
+仓库中的 `teach.toml` 纳入版本管理，默认使用 Codex、`gpt-6-astra` 和 600 秒执行时限。模板仍提供未指定模型、180 秒的起始配置。下面是项目默认配置；模型可用性取决于当前账户：
 
 ```toml
 active_backend = "local_codex"
@@ -71,11 +71,10 @@ type = "codex_cli"
 executable = "codex"
 auth = "existing_login"
 timeout_seconds = 600
-# 按账户权限选择模型；去掉 # 并保存才生效
-# model = "gpt-6-astra"
+model = "gpt-6-astra"
 ```
 
-没有创建 `teach.toml` 且没有命名后端选择时，程序会兼容旧环境变量并选择 HTTP，**不会自动假定使用 Codex**。未指定 model 时使用 Codex 内置默认模型；当前适配器忽略个人 Codex 配置文件，因此不会继承其中的模型设置。模型名可被配置接受，不代表当前账户一定有调用权限。
+配置文件缺失或从其他目录运行、且没有命名后端选择时，程序会兼容旧环境变量并选择 HTTP。建议从项目根目录运行，或用 `--config PATH` 指定文件。未指定 model 时使用 Codex 内置默认模型，不继承个人 Codex 配置中的模型。`teach.toml` 只保存可共享设置；API 密钥、代理及认证信息仍通过本机环境或被忽略的 `.env` 文件提供。
 
 ### 2. 导入后先查章节
 

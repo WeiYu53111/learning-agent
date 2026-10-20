@@ -157,7 +157,7 @@ SQLite 连接配置启用 foreign_keys、WAL 和 busy_timeout=5000ms；事务短
 
 数据目录优先级为 `--data-dir` > `TEACH_DATA_DIR` > `data-v2`。进程中已有环境变量优先于显式 `--env-file`，不自动读取 `.env`。teach 的 HTTP 适配器不隐式使用旧 OPENAI_API_KEY/DATABASE_PATH；Codex 认证仍服从它自己的机制。旧目标中的 TEACH_MAX_MODEL_REQUESTS、TEACH_CONTEXT_TOKENS、可配置 PDF 上限和日志等级尚未实现。
 
-Codex 只检查已有登录，不负责账户管理；API 密钥、代理、Codex 身份不被绑定快照固定。恢复时读取当前环境/外部身份。运行配置文件 `teach.toml`、`.env` 及 `.env.*` 被忽略，`.env.example` 保留提交。
+Codex 只检查已有登录，不负责账户管理；API 密钥、代理、Codex 身份不被绑定快照固定。恢复时读取当前环境/外部身份。`teach.toml` 作为不含凭据的项目默认配置纳入版本管理，默认 local_codex、gpt-6-astra、600 秒执行时限；配置结构的代码默认值仍见上表。`.env` 及 `.env.*` 被忽略，`.env.example` 保留提交。不得把密钥写入共享 TOML。
 
 ## 7. 迁移、备份与测试
 

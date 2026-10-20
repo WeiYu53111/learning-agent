@@ -4,7 +4,7 @@
 
 ## 1. 选择配置
 
-复制根目录 `teach.toml.example` 为 `teach.toml`，后者已加入 Git 忽略规则。程序默认从当前工作目录读取，也可以显式传入路径：
+根目录的 `teach.toml` 已纳入版本管理，提供项目默认值：local_codex、gpt-6-astra、600 秒执行时限，不包含凭据。`teach.toml.example` 保留通用模板，仅在配置文件缺失时复制或用于参考，避免覆盖已有设置。程序默认从当前工作目录读取，也可以显式传入路径：
 
 ```powershell
 .venv\Scripts\teach.exe --config teach.toml --backend local_codex start VERSION
