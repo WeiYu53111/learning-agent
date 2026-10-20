@@ -2,31 +2,51 @@
 
 ## 1. 责任与接口
 
-封装不同模型服务的调用差异，提供提取知识、生成教学任务、评估回答和独立复核能力。网关不修改业务状态，不执行模型生成代码，不把模型建议当作事实直接写入学习者模型。
+当前接口定义于 `backends.py` 的 `ModelBackend(Protocol)`。网关提供提取、审核、校正、出题和评分，不修改业务状态，不把模型建议直接写入学习者模型。独立双模型复核尚未实现；`reassess` 仍调用 `grade`，由应用层新增评分修订。
 
 ```text
-extract_knowledge(ExtractionInput, CallBudget) -> ExtractionCandidate
-generate_task(TeachingInput, CallBudget) -> TaskCandidate
-grade_answer(AssessmentInput, CallBudget) -> AssessmentCandidate
-review_assessment(ReviewInput, CallBudget) -> AssessmentCandidate
+model: str
+extract(chunks) -> Draft
+audit(draft, chunks) -> Audit
+revise(draft, chunks, instruction) -> Draft
+task(objective, chunks, action, history, misconceptions) -> Task
+grade(question, answer, chunks, misconceptions) -> Assessment
 ```
 
-适配器协议：`complete(messages, output_contract, generation_profile, deadline) -> ModelResult`。ModelResult 含结构化候选、finish_reason、供应商请求 ID、模型实际标识、用量、耗时；缺少的元数据标为 unknown，不凭空估计精确值。
+`BackendRegistry.build(BackendSpec)` 创建 `Gateway`（HTTP）、`CodexGateway` 或 `DemoGateway`。HTTP/Codex 继承 `ModelOperations`，共用任务提示与输入封装，分别实现 `call(operation,payload,contract)`。离线演示按固定教材返回候选，应用禁止它处理普通 PDF。选择规则与绑定属于应用层，网关不负责回退或更换服务。
+
+当前直接返回 Pydantic 候选，不提供通用 `ModelResult` 或完整用量遥测。`model` 是来源标签；应用加上后端名称与类型。配置的模型名不保证是服务解析后的精确版本；Codex 未指定模型时明确记录 `codex-default (resolved model unknown)`。统一请求 ID、实际模型、耗时与用量封装属于后续扩展。
 
 ## 2. 输入和上下文
 
 | 能力 | 必需输入 | 禁止或避免输入 |
 |---|---|---|
 | 知识提取 | 原文片段、章节、候选临时 key、提取 schema | 用户学习水平、完整学习历史 |
+| 草稿审核 | 当前草稿及范围内完整原文 | 学习者掌握状态 |
+| 草稿校正 | 当前草稿、范围内原文、人工修改要求 | 无关教材或学习历史 |
 | 教学生成 | 当前动作、主目标、rubric、证据、待验证误解码、已见题和显式偏好 | 无关历史、其他版本教材 |
 | 回答评估 | 固定题目、原 rubric、原文、原始回答、题目针对的误解定义 | 用户历史总分、模型预期用户能力 |
-| 独立复核 | 同样的题目、rubric、原文和回答、冲突字段名 | 第一轮结论和分数，避免锚定 |
+| 显式重新评分 | 原题、rubric、原文和原回答，经 `grade` 重新调用 | 不因旧结论而默认认可；reason 当前只作修订记录 |
 
 评估不输入用户画像，避免“过去答得好所以这次也判对”。提示与答案暴露由程序用于证据分类，不能让模型自行推断是否独立。
 
 提示词由版本化系统规则、任务契约、明确分隔的数据组成。教材及回答中的指令只作为数据。先发送完成任务所需证据，再发送最小用户上下文；不把整本教材或完整聊天历史塞入每次调用。
 
 ## 3. 输出契约
+
+当前字段以 `models.py` 为准：
+
+| 返回类型 | 当前字段 |
+| --- | --- |
+| Draft | `points/objectives`、`content_items`、`misconceptions`、`notes`；目标含 `prerequisites/source_refs/sample_question/excluded_reason` |
+| Audit | `issues[]`，每项含 `description/severity/source_refs` |
+| Task | `objective_key/action/explanation/question` |
+| Question | `stem/reference_answer/rubric/hints/novelty_group/source_refs/targeted_misconception_codes` |
+| Assessment | `status/items/feedback/correction/misconception_results`；items 使用 `answer_quotes` |
+
+当前 SourceRef 为 `chunk_id/quote`，按原文逐字且唯一匹配；尚未存 start/end。`EXPLAIN` 必须无题；其余已实现问题动作必须有题。语义新颖性尚无独立证明器，程序拒绝已见题面或题组，不能仅据此宣称场景在语义上独立。
+
+以下三个子节保留更丰富的**目标输出契约**，其中独立引用偏移、题型/难度、误解候选等字段不能直接传给当前接口（当前模型禁止额外字段）。
 
 ### 知识提取
 
@@ -105,16 +125,30 @@ refutes 只有在评估 valid、题目针对该码且整题独立通过时才由
 
 ## 5. 预算与重试
 
-每个网关逻辑调用共用 CallBudget：max_requests=4、deadline=180 秒；每次 HTTP 请求上限 min(90 秒, 剩余时间)。格式修复最多 1 次，网络/限流额外重试最多 2 次，所有分支都消耗同一计数，不能嵌套乘出更多请求。
+当前预算按传输区分：
 
-用户作答的独立复核属于同一评分操作，共享剩余 CallBudget；主评分已用尽预算时不得额外复核，应暂停并明确需要用户发起后续重试。教材长文按批执行，每批独立操作并记录，不能把全书处理混同一个 180 秒请求任务。
+| 后端 | 当前预算与失败处理 |
+| --- | --- |
+| HTTP | 操作默认 180 秒，单请求默认 90 秒且不超过剩余预算；最多 4 次请求，最多 1 次格式修复、2 次网络额外重试 |
+| Codex | 登录检查单独最多 15 秒，执行子进程默认最多 180 秒；teach 不自动重试，CLI 自身网络重连受进程时限约束 |
+| 演示 | 无远端请求与认证 |
 
-网络瞬断、429、服务端暂时错误可重试；凭证错误、不支持参数、无效模型和无效地址不原样重试。遵守合理 Retry-After，在剩余预算内用 1/2/4 秒退避和抖动；等待时间超预算则暂停。SDK 自动重试关闭，避免隐藏次数。
+HTTP 网络异常、429、5xx 可重试，其他 HTTP 错误直接失败；当前退避为 2、4 秒并受剩余预算限制，尚未实现 Retry-After 和抖动。Codex 非零退出不暴露原始 stderr，仅返回安全错误及退出码。两者均不自动切换后端。
 
-上下文预算按模型能力配置，而不是按字符数假定。预留输出和安全余量；精确 tokenizer 不可用时用保守上界预检，服务端仍报超限则拆分输入或拒绝，不能静默删关键证据。输出截断在剩余预算内用更小任务重试，不无限提高输出上限。
+当前 `input_chars` 默认 48000，检查序列化任务数据与 schema 的字符总量，并非 token 精确预算，也不含固定指令全部开销；超限拒绝，不截断证据。HTTP `output_tokens` 默认 8000；该字段不传入 Codex。显式恢复会开启新调用预算，尚无跨重启持久预算或自动独立复核。精确 tokenizer、按模型容量规划及完整调用遥测属于后续目标。
 
 ## 6. 供应商与测试适配
 
-GenerationProfile 声明模型、结构化输出能力、上下文上限、输出上限、支持的温度或推理参数。未验证参数不发送；供应商特有字段只在适配器出现。endpoint 及超时经过配置校验，日志中的 URL 去除凭证和敏感查询参数。
+HTTP 使用 HTTPX POST `/chat/completions`，通过系统提示提供 JSON Schema，检查响应完整性、严格 JSON 与 Pydantic 契约，再由应用执行领域校验。`api_key_env` 指定密钥变量，不存密钥值；HTTPX 使用进程环境代理。
 
-假适配器按 fixture 返回合法、非法、截断和超时结果，可注入耗时与取消。契约测试覆盖所有公开能力。真实模型评估单独运行，记录模型、提示词和用量，不把一次真实模型输出固定成普遍正确答案。
+Codex 调用流程：
+
+1. 通过 `shutil.which(executable)` 查找 CLI，预检输入大小，创建操作专属临时目录。
+2. 运行 `codex login status`；失败提示用户自行登录，不读取凭据文件，不实现账户管理。
+3. 将 Pydantic schema 转为严格 schema：递归移除 default、要求对象全部属性显式返回、禁止额外属性；不修改领域原始 schema。
+4. 使用参数列表启动 `codex exec --ephemeral --sandbox read-only --skip-git-repo-check --ignore-user-config -c features.shell_tool=false --output-schema FILE --output-last-message FILE --color never -`。提示和任务通过 stdin 传入，显式模型通过 `--model` 传入。
+5. 子进程复制进程环境，继承 `HTTP_PROXY/HTTPS_PROXY`；Windows 隐藏启动窗口。临时工作目录隔离项目上下文，忽略个人配置，因此默认模型为 CLI 内置默认而非个人配置的模型。
+6. 只接受成功退出且存在、不超过 4 MiB 的结果文件；严格解析 JSON 和 Pydantic 候选。退出码成功本身不足以判定成功，stdout/stderr 不作为业务结果。
+7. 结束后清理临时目录；超时由 subprocess 终止直接子进程。尚不提供通用进程树清理或完整逐调用审计。
+
+自动测试用假进程验证认证失败、非零退出、结果缺失、非法 JSON/契约、超时、参数及代理继承和临时目录清理，回归 HTTP 与离线流程。真实 Codex 最小调用已用已有登录及本地代理返回合法 Audit；这不代表教材提取、出题和评分质量已验收。详见[后端验证记录](../backends.md)。

@@ -1,8 +1,26 @@
 # 存储与运行配置详细设计
 
+## 当前实现基线
+
+本次后端集成使用 `storage.py` 的 schema 2。当前表为 `books/versions/draft_batches/sessions/attempts/assessments/events/backend_bindings`，复杂对象保存为 JSON，掌握状态按证据重放计算。下文第 1–5 节的 UnitOfWork、规范化表和索引是更完整的目标结构，不表示都已建表；第 6–7 节描述当前配置和迁移。
+
+新增表：
+
+```sql
+CREATE TABLE backend_bindings(
+  owner_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  spec TEXT NOT NULL
+);
+```
+
+`owner_id` 为草稿版本或教学会话 ID；没有多态外键，由应用控制归属。`spec` 为经过严格 Pydantic 校验的 BackendSpec JSON，包括密钥环境变量名称，不含密钥值、登录凭据或代理地址。选择改变时同一事务更新绑定并追加 `backend_selected` 事件，包含名称、配置快照和前一个名称。该事务独立于后续模型结果提交，不能将选择事件视为调用成功。
+
+`assessments.model` 保存 `后端名称/类型:模型标签`，原有修订不可覆盖。`batch_extracted/audit_backend/question_presented` 事件记录对应模型标签；不是完整逐调用账本。默认 Codex 模型未解析时明确使用 unknown 标签。旧版本的 model 字段保持原内容。
+
 ## 1. 边界和目录
 
-存储层实现仓储、UnitOfWork、文件仓储和迁移。不决定教学动作或评分。默认运行目录如下，旧数据库已经删除，不实现旧表兼容逻辑：
+目标存储层包含仓储、UnitOfWork、文件仓储和迁移，不决定教学动作或评分。以下为目标目录，当前尚无自动 backups/logs 管理；新原型 schema 1 → 2 的迁移不涉及已删除的旧系统数据库：
 
 ```text
 data-v2/
@@ -107,24 +125,44 @@ SQLite 连接配置启用 foreign_keys、WAL 和 busy_timeout=5000ms；事务短
 
 ## 6. 配置契约
 
+`BackendConfig` 根字段为 `active_backend` 和 `backends`，`BackendSpec` 禁止未知字段、要求严格类型及有限正数预算。配置文件默认是当前工作目录的 `teach.toml`；`--config PATH` 显式指定的文件不存在时报错。
+
+| TOML 后端字段 | 默认或约束 |
+| --- | --- |
+| type | `codex_cli/openai_compatible/demo` |
+| model | 默认空；HTTP 调用必填，Codex 空值使用内置默认模型 |
+| executable / auth | `codex` / `existing_login`，用于 Codex |
+| base_url / api_key_env | HTTP 地址 / `TEACH_API_KEY`，调用时读取变量值 |
+| timeout_seconds | 180；HTTP 操作预算或 Codex 执行时限 |
+| request_timeout_seconds | 90，仅 HTTP 使用 |
+| input_chars | 48000，序列化任务数据和 schema 的字符预检 |
+| output_tokens | 8000，仅 HTTP 使用 |
+
+后端选择优先级不能简化为统一的“CLI > 环境”：
+
+1. 已绑定的所有者且没有 `--backend`：沿用数据库配置快照，不读取新默认值。
+2. 显式 `--backend`：从当前配置解析指定名称，并更新绑定、记录事件。
+3. 新绑定：演示教材未显式选择时用离线后端；普通教材用 `active_backend`。
+4. 无命名后端选择时：使用下表原有环境变量构建 `legacy_http`。命名 TOML 配置不会逐字段被 `TEACH_MODEL/TEACH_API_BASE` 覆盖。
+
 | 配置项 | 默认或约束 |
 |---|---|
 | TEACH_DATA_DIR | `data-v2`，解析为绝对路径 |
-| TEACH_MODEL / TEACH_API_BASE | 模型任务必填，服务地址只允许 http/https |
+| TEACH_MODEL / TEACH_API_BASE | legacy_http 的模型/地址，服务地址只允许 http/https |
 | TEACH_API_KEY | 密钥，不写数据库和日志 |
 | TEACH_REQUEST_TIMEOUT | 90 秒，正数 |
-| TEACH_OPERATION_TIMEOUT | 180 秒，至少一个请求超时上限 |
-| TEACH_MAX_MODEL_REQUESTS | 4，受固定格式/网络重试分类上限约束 |
-| TEACH_CONTEXT_TOKENS / TEACH_OUTPUT_TOKENS | 对选定模型显式校验，不能盲用同一默认上限 |
-| TEACH_MAX_PDF_MB / TEACH_MAX_PDF_PAGES | 20 / 2000，正数 |
-| TEACH_LOG_LEVEL | INFO，受控枚举 |
+| TEACH_OPERATION_TIMEOUT | 180 秒，正数，请求时再受剩余预算限制 |
+| TEACH_INPUT_CHARS / TEACH_OUTPUT_TOKENS | 48000 字符 / 8000 token |
+| HTTP_PROXY / HTTPS_PROXY | 可选；Codex 继承进程环境，HTTPX 使用环境代理 |
 
-优先级：CLI 显式参数 > 进程环境 > 显式指定的 dotenv 文件 > 默认值。第一版不自动加载保留的旧 `.env`，需要 `--env-file` 才读取；旧 OPENAI_API_KEY/DATABASE_PATH 不隐式继承为新数据配置。错误只输出配置项名，不输出密钥值。
+数据目录优先级为 `--data-dir` > `TEACH_DATA_DIR` > `data-v2`。进程中已有环境变量优先于显式 `--env-file`，不自动读取 `.env`。teach 的 HTTP 适配器不隐式使用旧 OPENAI_API_KEY/DATABASE_PATH；Codex 认证仍服从它自己的机制。旧目标中的 TEACH_MAX_MODEL_REQUESTS、TEACH_CONTEXT_TOKENS、可配置 PDF 上限和日志等级尚未实现。
+
+Codex 只检查已有登录，不负责账户管理；API 密钥、代理、Codex 身份不被绑定快照固定。恢复时读取当前环境/外部身份。运行配置文件 `teach.toml`、`.env` 及 `.env.*` 被忽略，`.env.example` 保留提交。
 
 ## 7. 迁移、备份与测试
 
-首次写命令在空目录建立 schema；只读命令遇到空目录报告暂无数据，不自动触发模型配置检查。schema 迁移编号、内容 checksum 固定，已执行迁移内容变化拒绝继续。
+首次写命令取得目录锁后初始化数据库。当前接受 user_version 0、1、2；空库先创建基础表，再增加 backend_bindings 并设置 PRAGMA user_version=2。版本 1 升级保留已有教材、会话和证据；重复初始化版本 2 不重复建表。其他版本拒绝，不自动降级。只读命令不迁移；空目录只读查询提示暂无数据。
 
-升级前用 SQLite backup API 生成一致性备份，不能直接复制仍在 WAL 写入的 db 文件。未知未来 schema 拒绝写入；第一版不实现自动降级。运行时数据目录整体加入 gitignore。
+旧草稿/会话没有绑定时，在首次需要后端时按当时选择建立快照，不根据旧 model 文本猜测服务地址或账户。需要明确来源时应显式指定后端。当前没有 schema_migrations/checksum 机制，也不自动生成升级前备份；这些仍为后续目标。后续备份应使用 SQLite backup API，避免复制活动 WAL 下不完整的单个 db 文件。
 
-测试验证外键、活动任务唯一性、作答唯一性、修订 current 指针、修订为无效时完整撤销、CAS 回滚、WAL 恢复、第二写进程拒绝、进程崩溃释放锁、取消后迟到结果拒绝、迁移中断、磁盘错误，以及文件已移动但文档事务失败时的可恢复性。写锁测试需包含同一目录的不同路径别名。
+本次测试验证版本 1 数据保留、升级和重复初始化、绑定快照与显式切换、评分来源、密钥不进入快照，并回归原有证据及单写锁测试。完整迁移中断/磁盘故障、备份恢复、规范化表约束等仍需后续补齐，不列为本次已验收项。

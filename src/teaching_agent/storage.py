@@ -97,10 +97,16 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise AppError("数据库版本不兼容，请使用新的数据目录。")
             if version == 0:
                 conn.executescript(SCHEMA)
+            if version < 2:
+                conn.execute(
+                    "CREATE TABLE backend_bindings("
+                    "owner_id TEXT PRIMARY KEY,name TEXT NOT NULL,spec TEXT NOT NULL)"
+                )
+                conn.execute("PRAGMA user_version=2")
             conn.execute("PRAGMA journal_mode=WAL")
 
     @contextmanager

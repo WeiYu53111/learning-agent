@@ -57,19 +57,11 @@ def strict_json(text):
     return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
 
 
-class Gateway:
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        self.model = settings.model
+class ModelOperations:
+    """Shared teaching operations; transports implement call(operation, payload, contract)."""
 
-    def call(self, operation, payload, contract):
-        cfg = self.settings
-        if not cfg.key or not cfg.model or not cfg.base.startswith(("https://", "http://")):
-            raise AppError("请配置 TEACH_API_KEY、TEACH_MODEL 和 TEACH_API_BASE。")
-        body = json.dumps(payload, ensure_ascii=False)
-        schema = json.dumps(contract.model_json_schema(), ensure_ascii=False)
-        if len(body) + len(schema) > cfg.input_chars:
-            raise AppError("本次输入过长。请选择更小章节或提高 TEACH_INPUT_CHARS 后重试。")
+    @staticmethod
+    def messages(operation, body, schema):
         instructions = {
             "extract": (
                 "提取本批原文的知识草稿。先逐片段列内容清单，再生成知识点、可评估目标、"
@@ -111,54 +103,7 @@ class Gateway:
             + "\nJSON Schema:\n"
             + schema
         )
-        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": body}]
-        end = time.monotonic() + cfg.deadline
-        repaired, network_retries = False, 0
-        with httpx.Client() as client:
-            for request_index in range(4):
-                remaining = end - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    response = client.post(
-                        cfg.base + "/chat/completions",
-                        headers={"Authorization": f"Bearer {cfg.key}"},
-                        json={
-                            "model": cfg.model,
-                            "messages": messages,
-                            "max_tokens": cfg.output_tokens,
-                            "stream": False,
-                        },
-                        timeout=min(cfg.timeout, remaining),
-                    )
-                    if response.status_code == 429 or response.status_code >= 500:
-                        raise httpx.TransportError("temporary service error")
-                    if response.status_code >= 400:
-                        raise AppError(
-                            f"模型服务返回 HTTP {response.status_code}，请检查地址、模型和配置。"
-                        )
-                    choice = response.json()["choices"][0]
-                    if choice.get("finish_reason") == "length":
-                        raise ValueError("模型输出被截断")
-                    value = strict_json(choice["message"]["content"])
-                    return contract.model_validate(value)
-                except httpx.TransportError:
-                    network_retries += 1
-                    if network_retries > 2 or request_index == 3:
-                        break
-                    delay = min(2**network_retries, max(0, end - time.monotonic()))
-                    time.sleep(delay)
-                except (ValueError, KeyError, IndexError, TypeError, ValidationError):
-                    if repaired:
-                        raise AppError("模型连续返回不符合契约的内容，原数据未覆盖。") from None
-                    repaired = True
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": "上次输出不符合契约，请严格按schema重新输出完整JSON。",
-                        }
-                    )
-        raise AppError("模型请求失败或预算耗尽；已保存的数据可恢复后重试。")
+        return [{"role": "system", "content": prompt}, {"role": "user", "content": body}]
 
     def extract(self, chunks):
         return self.call("extract", {"chunks": [c.model_dump() for c in chunks]}, Draft)
@@ -206,3 +151,66 @@ class Gateway:
             },
             Assessment,
         )
+
+
+class Gateway(ModelOperations):
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.model = settings.model
+
+    def call(self, operation, payload, contract):
+        cfg = self.settings
+        if not cfg.key or not cfg.model or not cfg.base.startswith(("https://", "http://")):
+            raise AppError("请配置 TEACH_API_KEY、TEACH_MODEL 和 TEACH_API_BASE。")
+        body = json.dumps(payload, ensure_ascii=False)
+        schema = json.dumps(contract.model_json_schema(), ensure_ascii=False)
+        if len(body) + len(schema) > cfg.input_chars:
+            raise AppError("本次输入过长。请选择更小章节或提高 TEACH_INPUT_CHARS 后重试。")
+        messages = self.messages(operation, body, schema)
+        end = time.monotonic() + cfg.deadline
+        repaired, network_retries = False, 0
+        with httpx.Client() as client:
+            for request_index in range(4):
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    response = client.post(
+                        cfg.base + "/chat/completions",
+                        headers={"Authorization": f"Bearer {cfg.key}"},
+                        json={
+                            "model": cfg.model,
+                            "messages": messages,
+                            "max_tokens": cfg.output_tokens,
+                            "stream": False,
+                        },
+                        timeout=min(cfg.timeout, remaining),
+                    )
+                    if response.status_code == 429 or response.status_code >= 500:
+                        raise httpx.TransportError("temporary service error")
+                    if response.status_code >= 400:
+                        raise AppError(
+                            f"模型服务返回 HTTP {response.status_code}，请检查地址、模型和配置。"
+                        )
+                    choice = response.json()["choices"][0]
+                    if choice.get("finish_reason") == "length":
+                        raise ValueError("模型输出被截断")
+                    value = strict_json(choice["message"]["content"])
+                    return contract.model_validate(value)
+                except httpx.TransportError:
+                    network_retries += 1
+                    if network_retries > 2 or request_index == 3:
+                        break
+                    delay = min(2**network_retries, max(0, end - time.monotonic()))
+                    time.sleep(delay)
+                except (ValueError, KeyError, IndexError, TypeError, ValidationError):
+                    if repaired:
+                        raise AppError("模型连续返回不符合契约的内容，原数据未覆盖。") from None
+                    repaired = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "上次输出不符合契约，请严格按schema重新输出完整JSON。",
+                        }
+                    )
+        raise AppError("模型请求失败或预算耗尽；已保存的数据可恢复后重试。")

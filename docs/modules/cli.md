@@ -2,7 +2,7 @@
 
 ## 1. 职责与依赖
 
-CLI 解析命令、采集回答、渲染公开视图、处理终端信号。只调用 ApplicationFacade，不导入仓储实现或具体模型 SDK，不自行计算掌握、推进阶段或修改数据库。
+CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当前通过 Application 执行业务，并使用 Store 做部分列表查询，构造 BackendRegistry 注入应用；不自行计算掌握或处理供应商认证。全面使用类型化 Facade/ViewModel 是后续目标。
 
 初始命令解析使用标准库 argparse；终端输出先采用普通文本，颜色和富文本为可选增强。非 TTY 输出不使用动画或控制字符。中文路径和空格路径遵循 shell 引号规则。
 
@@ -10,18 +10,24 @@ CLI 解析命令、采集回答、渲染公开视图、处理终端信号。只�
 
 | 命令 | 输入与行为 |
 |---|---|
-| `teach import PATH [--reextract]` | 导入并构建草稿；显示质量报告，交互确认发布；相同文件默认复用 |
-| `teach books` | 文档、已发布版本、草稿、覆盖状态 |
-| `teach outline BOOK [--version VERSION]` | 展示章节、知识点和目标 ID，默认最新发布版本 |
+| `teach import PATH` | 只在本地解析和保存 PDF，相同文件复用，不调用模型 |
+| `teach books` / `teach drafts` | 分别列出教材和内容版本 |
+| `teach outline BOOK` | 查看章节 ID 和物理页范围 |
+| `teach draft BOOK --section SECTION [--pages START:END]` | 生成草稿；失败用 `draft --resume VERSION` |
 | `teach inspect VERSION` | 展示草稿质量问题、引用与待确认项 |
-| `teach publish VERSION` | 仅对已通过硬校验的草稿确认发布 |
-| `teach start BOOK (--section SECTION | --point POINT) [--version VERSION]` | 两种入口互斥，进入教学 |
-| `teach resume [SESSION]` | 恢复指定会话；省略时选择最近可恢复会话 |
-| `teach progress [BOOK]` | 目标级状态和证据摘要，明确显示版本 |
-| `teach review [BOOK]` | 列出到期项，确认后开始复习会话 |
+| `teach audit VERSION` / `teach review VERSION` | 模型审核 / 人工交互审核校正 |
+| `teach approve VERSION` / `teach publish VERSION` | 确认当前审核修订 / 发布已确认版本 |
+| `teach start VERSION [--point POINT] [--due] [--no-chat]` | 使用已发布版本进入教学；复习用 --due |
+| `teach resume [SESSION] [--no-chat]` | 恢复指定会话；仅一个可恢复会话时可省略 ID |
+| `teach progress VERSION` | 目标级状态、独立通过次数和复习安排 |
+| `teach attempts SESSION` | 原始作答、最新评分修订及评分后端/模型 |
 | `teach reassess ATTEMPT --reason TEXT` | 显式复核原作答，创建新评估修订；不要求用户再答同题 |
 
-import 的模型构建完成后若 stdin 非 TTY，不自动确认发布，而是输出草稿 ID 和 publish 命令。publish 在非 TTY 中要求 `--yes` 明确表达发布意图，不能默认肯定。这属于数据质量确认，不需要额外服务权限。
+当前 import 不生成草稿，publish 不提供 `--yes`；发布门禁是当前修订经过 audit 和人工 approve。完整命令含 export/apply/revise/resolve/clone/answer/next，见[命令清单](../prototype.md#6-当前命令清单)。`teach ask` 与 `/ask` 尚未实现。
+
+全局参数 `--config PATH`、`--backend NAME`、`--env-file PATH`、`--data-dir PATH` 放在子命令之前。CLI 仅把配置路径和显式选择传给 BackendRegistry；绑定优先级由应用执行。start/resume 展示所选后端、类型和配置模型，默认值明确显示“后端默认”。
+
+Codex 需要代理时，在启动 teach 的同一终端设置 `HTTP_PROXY/HTTPS_PROXY`，或使用显式环境文件。CLI 不代为登录、不回显提供方完整错误；认证失效提示用户在 Codex 中修正后恢复。选择后端错误不自动换服务。配置示例见[后端说明](../backends.md)。
 
 最近会话按 updated_at 降序选择 active/paused。多个未结束会话先列候选，要求指定 ID；completed/ended_with_gaps 默认只读展示，需要继续学习则开启新会话。
 
@@ -66,6 +72,8 @@ TaskView 不含 reference_answer、rubric 和尚未请求的提示内容。反�
 Ctrl+C 在编辑阶段丢弃未提交缓冲并暂停；在模型运行中先使操作取消标记生效，再暂停，迟到结果不得提交。EOF 保存已提交状态后退出。磁盘故障无法保存时必须明确告知；不可用退出消息掩盖失败。
 
 ## 6. 退出码与测试
+
+当前 argparse 参数错误及配置文件不存在返回 2；捕获的模型/业务/配置/存储错误返回 1，正常结束返回 0，顶层 Ctrl+C 返回 130。交互内可处理错误可能在返回提示符或保存退出后以 0 结束。下表为尚未实现的更细分类目标，不能用于当前脚本判断错误类型。
 
 | 退出码 | 含义 |
 |---|---|

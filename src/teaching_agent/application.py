@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .backends import BackendRegistry, BackendSpec
 from .demo import DemoGateway
 from .gateway import Gateway, Settings
 from .knowledge import check_refs, ordered_objectives, parse_pdf, quality_report
@@ -14,15 +15,62 @@ from .storage import Store, dumps, now, uid
 
 
 class Application:
-    def __init__(self, store: Store, settings: Settings | None = None, gateway=None):
+    def __init__(
+        self,
+        store: Store,
+        settings: Settings | None = None,
+        gateway=None,
+        backends: BackendRegistry | None = None,
+    ):
         self.store = store
         self.settings = settings
         self.injected_gateway = gateway
+        self.backends = backends or BackendRegistry()
+        self._gateways = {}
 
-    def gateway(self, book):
+    def gateway(self, book, owner=None):
         if self.injected_gateway:
             return self.injected_gateway
-        return DemoGateway() if book.demo else Gateway(self.settings or Settings.from_env())
+        if self.settings is not None:
+            return DemoGateway() if book.demo else Gateway(self.settings)
+        binding = (
+            self.store.rows("SELECT * FROM backend_bindings WHERE owner_id=?", (owner,))
+            if owner
+            else []
+        )
+        if binding and not self.backends.selected:
+            name = binding[0]["name"]
+            spec = BackendSpec.model_validate_json(binding[0]["spec"])
+        else:
+            name, spec = self.backends.choose(book.demo)
+        if spec.type == "demo" and not book.demo:
+            raise AppError("离线演示后端只能用于演示教材。")
+        serialized = spec.model_dump_json()
+        if owner and (
+            not binding or binding[0]["name"] != name or binding[0]["spec"] != serialized
+        ):
+            with self.store.connect() as conn:
+                conn.execute(
+                    "INSERT INTO backend_bindings VALUES(?,?,?) "
+                    "ON CONFLICT(owner_id) DO UPDATE SET name=excluded.name,spec=excluded.spec",
+                    (owner, name, serialized),
+                )
+                self.store.event(
+                    conn,
+                    owner,
+                    "backend_selected",
+                    {
+                        "name": name,
+                        "spec": spec.model_dump(),
+                        "previous": binding[0]["name"] if binding else None,
+                    },
+                )
+        key = (name, serialized)
+        if key not in self._gateways:
+            backend = self.backends.build(spec)
+            backend.model = f"{name}/{spec.type}:{backend.model}"
+            self._gateways[key] = backend
+        return self._gateways[key]
 
     def book(self, identifier):
         return Book.model_validate_json(self.store.get("books", identifier)["data"])
@@ -85,6 +133,7 @@ class Application:
         if not self.section_chunks(book, section_id):
             raise AppError("章节不存在或没有可用文本。")
         identifier = uid("ver")
+        model = self.gateway(book, identifier).model
         with self.store.connect() as conn:
             conn.execute(
                 "INSERT INTO versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -99,7 +148,7 @@ class Application:
                     None,
                     "{}",
                     None,
-                    self.gateway(book).model,
+                    model,
                     now(),
                 ),
             )
@@ -121,7 +170,8 @@ class Application:
             if position in cached:
                 partial = Draft.model_validate_json(cached[position])
             else:
-                partial = self.gateway(book).extract(batch)
+                gateway = self.gateway(book, identifier)
+                partial = gateway.extract(batch)
                 # Keep invalid candidates editable, but do not cache broken references.
                 report = quality_report(partial, batch)
                 if report["errors"]:
@@ -130,6 +180,15 @@ class Application:
                     conn.execute(
                         "INSERT INTO draft_batches VALUES(?,?,?)",
                         (identifier, position, partial.model_dump_json()),
+                    )
+                    self.store.event(
+                        conn,
+                        identifier,
+                        "batch_extracted",
+                        {
+                            "position": position,
+                            "model": gateway.model,
+                        },
                     )
             value = partial.model_dump()
             prefix = f"b{position}_"
@@ -197,7 +256,8 @@ class Application:
             raise AppError("请先修复结构错误：" + "；".join(errors[:5]))
         # Whole-draft audit also checks cross-batch ordering. Oversized input is rejected,
         # never silently truncated. User can select a smaller page range when importing.
-        audit = self.gateway(book).audit(draft, chunks)
+        gateway = self.gateway(book, identifier)
+        audit = gateway.audit(draft, chunks)
         chunk_map = {c.id: c for c in chunks}
         for issue in audit.issues:
             if check_refs(issue.source_refs, chunk_map):
@@ -209,6 +269,7 @@ class Application:
                 (audit.model_dump_json(), row["revision"], identifier),
             )
             self.store.event(conn, identifier, "audit", audit.model_dump())
+            self.store.event(conn, identifier, "audit_backend", {"model": gateway.model})
         return audit
 
     def resolve_issue(self, identifier, index, note):
@@ -323,6 +384,7 @@ class Application:
             "why": "开始诊断必要目标",
         }
         identifier = uid("session")
+        self.gateway(self.book(row["book_id"]), identifier)
         with self.store.connect() as conn:
             conn.execute(
                 "INSERT INTO sessions VALUES(?,?,?,?,?)",
@@ -420,7 +482,8 @@ class Application:
         )
         source_ids = {ref.chunk_id for ref in obj.source_refs}
         selected_chunks = [c for c in chunks if c.id in source_ids]
-        task = self.gateway(book).task(
+        gateway = self.gateway(book, identifier)
+        task = gateway.task(
             obj, selected_chunks, action, history, [m.model_dump() for m in draft.misconceptions]
         )
         if task.objective_key != current or task.action != action or not task.question:
@@ -461,6 +524,7 @@ class Application:
                     "question": task.question.model_dump(),
                     "action": action,
                     "reason": state["why"],
+                    "model": gateway.model,
                 },
             )
         return state
@@ -499,7 +563,8 @@ class Application:
         draft = Draft.model_validate_json(ver["data"])
         question = Question.model_validate_json(attempt["question"])
         source_ids = {r.chunk_id for r in question.source_refs}
-        assessment = self.gateway(book).grade(
+        gateway = self.gateway(book, attempt["session_id"])
+        assessment = gateway.grade(
             question,
             attempt["answer"],
             [c for c in chunks if c.id in source_ids],
@@ -511,7 +576,7 @@ class Application:
         value, passed = score(assessment, question)
         if value is not None and value >= 0.8 and not passed:
             assessment.status = "needs_review"
-        return assessment, self.gateway(book).model
+        return assessment, gateway.model
 
     def finish_assessment(self, identifier):
         row, state = self.session(identifier)
@@ -612,6 +677,8 @@ class Application:
         row, state = self.session(identifier)
         if state["lifecycle"] in {"completed", "ended_with_gaps"}:
             return state
+        _, book, _ = self.version(row["version_id"])
+        self.gateway(book, identifier)
         state["lifecycle"] = "active"
         if state.pop("needs_replan", False) and state["phase"] == "awaiting_answer":
             ver, _, _ = self.version(row["version_id"])
@@ -641,7 +708,9 @@ class Application:
         state.update(phase="planning", task=None)
         self.store.save_session(identifier, row["revision"], state)
         refs = {r.chunk_id for r in obj.source_refs}
-        task = self.gateway(book).task(obj, [c for c in chunks if c.id in refs], "EXPLAIN", [], [])
+        task = self.gateway(book, identifier).task(
+            obj, [c for c in chunks if c.id in refs], "EXPLAIN", [], []
+        )
         if task.action != "EXPLAIN" or task.objective_key != obj.key or task.question:
             raise AppError("讲解任务契约错误。")
         row, state = self.session(identifier)

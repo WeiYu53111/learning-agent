@@ -39,6 +39,18 @@ teach demo
 
 ## 使用自己的 PDF
 
+模型后端现在可选 **Codex CLI（复用已有登录）** 或 **HTTP API**，配置和切换方式见[模型后端说明](docs/backends.md)。选择 Codex 时无需填写 HTTP API 密钥：
+
+```powershell
+Copy-Item teach.toml.example teach.toml
+codex login status
+$env:HTTP_PROXY = "http://127.0.0.1:7897"   # 本机需要代理时设置
+$env:HTTPS_PROXY = "http://127.0.0.1:7897"
+.venv\Scripts\teach.exe --backend local_codex draft BOOK --section s1 --pages 1:5
+```
+
+导入 PDF 仍使用下方的 `import` 命令。生成草稿后执行 `audit`、`review`，确认发布后用 `--backend local_codex start VERSION` 开始学习。下方 `.env` 示例用于 HTTP API 后端；未创建 `teach.toml` 时继续兼容原有环境变量配置。
+
 参考 `.env.example` 配置 `TEACH_API_BASE`、`TEACH_API_KEY`、`TEACH_MODEL`。已有 `.env` 不自动读取或覆盖，需要显式指定 `--env-file`。模型服务需要兼容 Chat Completions HTTP 接口。
 
 ```powershell
@@ -70,6 +82,7 @@ python -m venv .venv
 ## 文档
 
 - [原型使用说明与实现边界](docs/prototype.md)：当前可执行命令、审核流程和设计取舍。
+- [模型后端与认证](docs/backends.md)：Codex、HTTP API、已有登录、代理、后端切换与数据库迁移。
 - [总体设计](docs/design.md)：目标架构和模块职责。
 - [领域模型与教学状态机](docs/domain-and-policy.md)：证据、评分和教学策略。
 - [实施与验收](docs/implementation-plan.md)：完整版本的验收目标。

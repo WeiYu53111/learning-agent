@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from .application import Application
+from .backends import BackendRegistry
 from .demo import make_pdf
 from .knowledge import quality_report
 from .models import AppError, Audit, Draft
@@ -24,6 +25,8 @@ def parser():
     root = argparse.ArgumentParser(prog="teach", description="先审核教材，再开始教学")
     root.add_argument("--data-dir", type=Path)
     root.add_argument("--env-file", type=Path, help="显式读取 TEACH_ 配置")
+    root.add_argument("--config", type=Path, help="后端配置文件，默认查找 teach.toml")
+    root.add_argument("--backend", help="显式选择后端；覆盖并记录当前会话的后端选择")
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("demo", help="创建明确标注的离线演示教材与草稿")
     command = sub.add_parser("import", help="只解析并保存 PDF，不调用模型")
@@ -359,7 +362,7 @@ def dispatch(app, args):
         row, book, chunks = app.version(args.version)
         if row["status"] != "draft":
             raise AppError("请先 clone 已发布版本。")
-        draft = app.gateway(book).revise(
+        draft = app.gateway(book, args.version).revise(
             Draft.model_validate_json(row["data"]), chunks, args.instruction
         )
         app.save_draft(args.version, draft, args.instruction)
@@ -381,6 +384,14 @@ def dispatch(app, args):
                     raise AppError("请用 teach sessions 查询并指定要恢复的会话。")
                 identifier = candidates[0]["id"]
             state = app.resume(identifier)
+        binding = app.store.rows(
+            "SELECT name,spec FROM backend_bindings WHERE owner_id=?", (identifier,)
+        )
+        if binding:
+            spec = json.loads(binding[0]["spec"])
+            print(
+                f"后端：{binding[0]['name']} ({spec['type']}) | 模型：{spec['model'] or '后端默认'}"
+            )
         if args.no_chat:
             print_session(state)
         else:
@@ -394,7 +405,7 @@ def dispatch(app, args):
     elif command == "attempts":
         app.session(args.session)
         for row in app.store.rows(
-            "SELECT a.id,a.objective_key,a.answer,s.revision,s.data FROM attempts a "
+            "SELECT a.id,a.objective_key,a.answer,s.revision,s.data,s.model FROM attempts a "
             "LEFT JOIN assessments s ON s.attempt_id=a.id AND s.revision="
             "(SELECT MAX(revision) FROM assessments WHERE attempt_id=a.id) "
             "WHERE a.session_id=? ORDER BY a.created_at,a.id",
@@ -403,6 +414,7 @@ def dispatch(app, args):
             status = json.loads(row["data"])["status"] if row["data"] else "pending"
             print(f"{row['id']} | {row['objective_key']} | {status} r{row['revision'] or 0}")
             print(f"  回答：{row['answer']}")
+            print(f"  评分后端/模型：{row['model'] or '-'}")
     elif command == "answer":
         print_session(app.submit(args.session, args.text))
     elif command == "next":
@@ -431,7 +443,7 @@ def main(argv=None):
             return 2
         load_dotenv(args.env_file, override=False)
     store = Store(args.data_dir or Path(os.getenv("TEACH_DATA_DIR", "data-v2")))
-    app = Application(store)
+    app = Application(store, backends=BackendRegistry(args.config, args.backend))
     readonly = {
         "books",
         "outline",
