@@ -1,22 +1,78 @@
 # PDF 教学 Agent
 
-以学习者知识模型为核心的 CLI 教学系统。通过诊断、讲解、练习、补救和复测，持续维护有证据支持的学习状态。
+可以运行的 CLI 教学原型（0.2.0）。导入文本 PDF，生成章节知识清单，人工审核校正后发布，再进行诊断、练习、补救和复习。SQLite 保存教材、审核记录、作答和评分修订，支持暂停恢复。
 
-项目正在重新设计。旧实现、旧测试和旧设计文档已移除，目前没有可运行应用；文档中的命令和目录均为待实现设计。
+完整的[已实现功能清单、命令和实现边界](docs/prototype.md)已按当前代码整理。当前从指定的已发布教材版本开始教学，尚不支持 `teach ask` 或 `/ask` 自由提问；学习中的普通输入会作为当前题目的答案处理。
 
-## 设计文档
+## 立即体验
 
-1. [总体设计](docs/design.md)：范围、模块边界、教材建模和 CLI 交互。
-2. [领域模型与教学状态机](docs/domain-and-policy.md)：契约、证据、评分、补救与复习。
-3. [实施与验收](docs/implementation-plan.md)：开发顺序、可靠性要求和验收场景。
-4. [各模块详细设计](docs/modules/README.md)：CLI、应用服务、教材知识、学习者模型、教学策略、LLM 网关和存储配置的接口与流程。
+当前工作区的 `.venv` 已安装应用。在 PowerShell 中运行：
 
-## 第一版范围
+```powershell
+.venv\Scripts\teach.exe demo
+```
 
-- 单用户、本地 CLI，支持文本型 PDF 的章节和知识点学习。
-- 按学习目标诊断和记录掌握，支持提示、跳过、补救和新题验证。
-- 达标依据近期独立证据，趋势分数只作展示；同一数据目录只允许一个写进程。
-- SQLite 保存证据与会话，支持退出后恢复。
-- 暂不包含 Web、OCR、向量数据库和多 Agent。
+命令生成三页 Python 教材及待审核草稿，输出版本 ID。将下列 `VERSION` 替换为实际 ID：
 
-本地 `.env`、PDF 等非数据库文件和虚拟环境保留，旧数据库已删除。新实现重新建立数据库，不迁移旧数据；开发时重新建立依赖配置和环境。
+```powershell
+.venv\Scripts\teach.exe review VERSION
+```
+
+检查知识点、教学顺序、原文引用和代表题；输入 `approve`，再输入 `publish`。然后开始对话：
+
+```powershell
+.venv\Scripts\teach.exe start VERSION
+```
+
+直接输入答案，反馈后回车继续。`/hint` 获取提示，`/explain` 请求讲解，`/skip` 跳过，`/progress` 查看进度，`/pause` 保存退出。`teach sessions` 查询会话，`teach resume SESSION` 恢复。未激活虚拟环境时，所有 `teach` 命令均使用上述完整路径。
+
+`.venv\Scripts\teach.exe` 是安装工具根据 `pyproject.toml` 的命令入口生成的启动程序，业务代码位于 `src/teaching_agent/`。也可先激活虚拟环境，再使用短命令：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+teach demo
+```
+
+激活后也可用 `python -m teaching_agent demo`；无需激活的等价写法为 `.venv\Scripts\python.exe -m teaching_agent demo`。
+
+**离线演示无需密钥，但使用固定场景和关键词评分，仅用于体验流程，不代表真实模型的教学效果。** 演示每个目标只有三种题目，反复练习可能耗尽题目。
+
+## 使用自己的 PDF
+
+参考 `.env.example` 配置 `TEACH_API_BASE`、`TEACH_API_KEY`、`TEACH_MODEL`。已有 `.env` 不自动读取或覆盖，需要显式指定 `--env-file`。模型服务需要兼容 Chat Completions HTTP 接口。
+
+```powershell
+.venv\Scripts\teach.exe import "教材.pdf"
+.venv\Scripts\teach.exe outline BOOK
+.venv\Scripts\teach.exe --env-file .env draft BOOK --section s1 --pages 1:5
+.venv\Scripts\teach.exe --env-file .env audit VERSION
+.venv\Scripts\teach.exe --env-file .env review VERSION
+.venv\Scripts\teach.exe --env-file .env start VERSION
+```
+
+`BOOK`、`VERSION` 替换为输出的 ID；`--pages` 是可选的 PDF 物理页范围，必须位于所选章节内。建议先用一小节检验模型效果。导入仅在本地解析；生成草稿、审核、自然语言校正、出题和评分会将相应材料发送给配置的模型服务。
+
+默认数据目录 `data-v2/`，首次写入自动建新库，不迁移旧数据库。全局参数 `--data-dir PATH` 可隔离不同实验。
+
+## 安装与验证
+
+新环境需要 Python 3.11 或更新版本：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\ruff.exe check src tests
+```
+
+测试覆盖审核门禁、原文引用、先修关系、掌握判定、提示降权、评分修订、会话恢复、单写进程锁，以及真实 CLI 子进程的完整离线教学流程。真实模型的知识划分、题目质量和语义评分仍需实际教材验收。
+
+## 文档
+
+- [原型使用说明与实现边界](docs/prototype.md)：当前可执行命令、审核流程和设计取舍。
+- [总体设计](docs/design.md)：目标架构和模块职责。
+- [领域模型与教学状态机](docs/domain-and-policy.md)：证据、评分和教学策略。
+- [实施与验收](docs/implementation-plan.md)：完整版本的验收目标。
+- [各模块详细设计](docs/modules/README.md)：完整设计契约。
+
+当前接口以原型使用说明和 `teach --help` 为准。暂不支持 Web、OCR、向量数据库或多用户并发写入。
