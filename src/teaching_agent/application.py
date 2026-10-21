@@ -615,6 +615,47 @@ class Application:
         draft = Draft.model_validate_json(row["data"])
         return project(self.evidence(version_id), draft.objectives(), draft.misconceptions)
 
+    def progress_details(self, version_id):
+        """Latest assessment disposition, separate from mastery evidence."""
+        result = {}
+        for attempt in self.store.rows(
+            "SELECT id,objective_key FROM attempts WHERE version_id=?", (version_id,)
+        ):
+            detail = result.setdefault(attempt["objective_key"], {
+                "attempts": 0, "needs_review": [], "invalid_question": 0, "pending": 0,
+            })
+            detail["attempts"] += 1
+            detail["pending"] += 1
+        for entry in self.evidence(version_id):
+            detail = result[entry["objective_key"]]
+            detail["pending"] -= 1
+            if entry["assessment"]["status"] == "needs_review":
+                detail["needs_review"].append(entry["id"])
+            elif entry["assessment"]["status"] == "invalid_question":
+                detail["invalid_question"] += 1
+        return result
+
+    def teaching_view(self, identifier):
+        """Resolve current display context without modifying stored sessions."""
+        row, state = self.session(identifier)
+        ver, _, _ = self.version(row["version_id"])
+        draft = Draft.model_validate_json(ver["data"])
+        current = state.get("current")
+        obj = draft.objectives().get(current)
+        if obj is None:
+            return None
+        point = next(p for p in draft.points if any(o.key == current for o in p.objectives))
+        mastery = self.progress(row["version_id"])[current]
+        attempt = next((e for e in self.evidence(row["version_id"])
+                        if e["session_id"] == identifier
+                        and e["question_id"] == state.get("question_id")), None)
+        return {
+            "title": point.title, "description": obj.description, "key": current,
+            "mastery": mastery, "attempt": attempt,
+            "misconceptions": [m.description for m in draft.misconceptions
+                               if m.code in mastery["misconceptions"]],
+        }
+
     def start(self, version_id, point=None, review=False):
         row, _, _ = self.version(version_id)
         if row["status"] != "published":
@@ -905,9 +946,6 @@ class Application:
         validate_assessment(
             assessment, question, attempt["answer"], {m.code for m in draft.misconceptions}
         )
-        value, passed = score(assessment, question)
-        if value is not None and value >= 0.8 and not passed:
-            assessment.status = "needs_review"
         return assessment, gateway.model
 
     def finish_assessment(self, identifier, progress=None):

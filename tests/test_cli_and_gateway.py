@@ -110,7 +110,7 @@ def test_real_cli_process_completes_teaching_and_exposes_attempts(tmp_path):
     version = Store(root).rows("SELECT id FROM versions")[0]["id"]
     run("review", version, answers="approve\npublish\n")
     answers = "".join((lesson[1] + "\n/end\n\n") * 2 for lesson in LESSONS)
-    assert "[completed/" in run("start", version, answers=answers)
-    assert run("progress", version).count("mastered") == 3
+    assert "[已完成 /" in run("start", version, answers=answers)
+    assert run("progress", version).count("[已掌握]") == 3
     session = Store(root).rows("SELECT id FROM sessions")[0]["id"]
     assert run("attempts", session).count("valid r1") == 6

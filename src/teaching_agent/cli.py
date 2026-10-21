@@ -18,7 +18,8 @@ from .application import Application
 from .backends import BackendRegistry
 from .demo import make_pdf
 from .knowledge import quality_report
-from .models import AppError, Audit, Draft
+from .models import AppError, Assessment, Audit, Draft, Question
+from .learner import score
 from .progress import DraftProgress
 from .storage import Store, writer_lock
 
@@ -198,21 +199,73 @@ def inspect(app, identifier):
         print("尚未完成当前修订的模型审核。修改后须重新审核、确认。")
 
 
+MASTERY_LABELS = {
+    "provisionally_mastered": "已掌握", "review_due": "待复习", "learning": "学习中",
+    "needs_remediation": "待补练", "unknown": "未验证",
+}
+
+
 def print_progress(app, identifier):
-    for key, value in app.progress(identifier).items():
-        trend = "未验证" if value["score"] is None else f"{value['score']:.3f}"
-        print(
-            f"{key}: {value['status']} | 独立通过 {value['independent_passes']}"
-            f" | 趋势 {trend} | 复习 {value['due'] or '-'}"
-        )
-        if value["misconceptions"]:
-            print("  关键误解：" + ", ".join(value["misconceptions"]))
+    row, _, _ = app.version(identifier)
+    draft = Draft.model_validate_json(row["data"])
+    progress = app.progress(identifier)
+    labels = MASTERY_LABELS
+    details = app.progress_details(identifier)
+    included = [obj for obj in draft.objectives().values() if not obj.excluded_reason]
+    counts = {status: 0 for status in labels}
+    for obj in included:
+        counts[progress[obj.key]["status"]] += 1
+    print(f"共 {len(included)} 个学习目标")
+    print(" · ".join(f"{label} {counts[status]}" for status, label in labels.items()))
+    print("已练习不等于已掌握；未验证表示尚无有效评分证据。")
+    print("以下按教材知识点排列，实际下一题由当前会话决定。")
+    misconceptions = {m.code: m.description for m in draft.misconceptions}
+    for index, point in enumerate(draft.points, 1):
+        print(f"\n{index}. {point.title}")
+        for obj in point.objectives:
+            if obj.excluded_reason:
+                print(f"   [已排除] {obj.description}")
+                print(f"   编号：{obj.key} · 原因：{obj.excluded_reason}")
+                continue
+            value = progress[obj.key]
+            trend = "未验证" if value["score"] is None else f"{value['score']:.3f}"
+            print(f"   [{labels[value['status']]}] {obj.description}")
+            detail = (
+                f"   编号：{obj.key} · 独立通过 {value['independent_passes']}/2"
+                f" · 趋势分 {trend}"
+            )
+            if value["due"]:
+                detail += f" · 复习时间 {value['due']}"
+            print(detail)
+            history = details.get(obj.key)
+            if history:
+                print(
+                    f"   已作答 {history['attempts']} 次 · 评分待复核 {len(history['needs_review'])} 次"
+                    f" · 题目无效 {history['invalid_question']} 次 · 待评分 {history['pending']} 次"
+                )
+                if value["status"] == "unknown":
+                    print("   已有作答，但尚无可计入掌握的有效评分证据；请查看上述评分状态。")
+                for attempt_id in history["needs_review"]:
+                    print(f'   复核：teach reassess {attempt_id} --reason "复核评分"')
+            for code in value["misconceptions"]:
+                print(f"   关键误解：{misconceptions.get(code, '未知误解')}（{code}）")
 
 
-def print_session(state):
-    print(f"\n[{state['lifecycle']}/{state['phase']}] {state['why']}")
+def print_session(state, view=None):
+    lifecycle = {"active": "学习中", "paused": "已暂停", "completed": "已完成",
+                 "ended_with_gaps": "本轮结束，仍有待学内容"}
+    phases = {"planning": "准备下一题", "awaiting_answer": "等待回答",
+              "evaluating": "正在评分", "feedback_ready": "查看反馈"}
+    print(f"\n[{lifecycle.get(state['lifecycle'], state['lifecycle'])} / "
+          f"{phases.get(state['phase'], state['phase'])}]")
+    if view:
+        print(f"知识点：{view['title']}\n学习目标：{view['description']}")
+        print(f"编号：{view['key']} · 当前状态：{MASTERY_LABELS[view['mastery']['status']]}")
     task = state.get("task")
     if task:
+        actions = {"DIAGNOSE": "首次诊断", "REMEDIATE": "针对性补练", "REASSESS": "再次验证",
+                   "REVIEW": "到期复习", "EXPLAIN": "目标讲解"}
+        print("本题教学动作：" + actions.get(task["action"], task["action"]))
         if task["explanation"]:
             print("讲解：" + task["explanation"])
         if state["phase"] == "awaiting_answer" and task.get("question"):
@@ -225,10 +278,43 @@ def print_session(state):
             print("/hint 提示，/explain 讲解，/skip 跳过目标，/pause 保存暂停。")
             if saved["lines"]:
                 print("已保存的当前输入：\n" + "\n".join(saved["lines"]))
-    if state.get("feedback"):
-        feedback = state["feedback"]
-        print(f"评估状态：{feedback['status']}\n{feedback['feedback']}")
+    if state.get("feedback") and state["phase"] == "feedback_ready":
+        attempt = view.get("attempt") if view else None
+        feedback = attempt["assessment"] if attempt else state["feedback"]
+        statuses = {"valid": "有效评分", "needs_review": "评分待复核", "invalid_question": "题目无效"}
+        print(f"评估状态：{statuses[feedback['status']]}\n{feedback['feedback']}")
+        if feedback["status"] == "valid" and (attempt or (task and task.get("question"))):
+            question = Question.model_validate(attempt["question"] if attempt else task["question"])
+            assessment = Assessment.model_validate(feedback)
+            value, passed = score(assessment, question)
+            print(f"本题 {value * 100:g} 分；{'已达标' if passed else '尚未达标'}。")
+            items = {item.rubric_key: item for item in assessment.items}
+            for rubric in question.rubric:
+                item = items[rubric.key]
+                if item.credit < 1:
+                    print(f"{'关键项待补全' if rubric.critical else '待完善项'}：{rubric.description}")
+                    print(f"  得分比例 {item.credit:g}；原因：{item.reason}")
+            if attempt and attempt["assisted"]:
+                print("本题使用过提示，属于辅助作答，不计入独立达标次数。")
+            if attempt and attempt["practice_only"]:
+                print("本题仅作练习，不计入掌握证据。")
+        elif feedback["status"] != "valid":
+            print("本次结果不计入掌握证据，不能据此判断你未掌握。")
+            if attempt and feedback["status"] == "needs_review":
+                print(f'复核：teach reassess {attempt["id"]} --reason "复核评分"')
         print(feedback["correction"])
+        if view:
+            mastery = view["mastery"]
+            count = mastery["independent_passes"]
+            print(f"当前独立达标 {count}/2；单题须至少 80 分且关键项全对。")
+            if count < 2:
+                print(f"还需 {2 - count} 次不同场景的独立达标；独立失败后重新累计。")
+            if view["misconceptions"]:
+                print("仍需解除已确认的关键误解：" + "；".join(view["misconceptions"]))
+            if mastery["status"] == "provisionally_mastered":
+                print("本目标已掌握。")
+            elif mastery["status"] == "review_due":
+                print("本目标已到复习时间，需要完成复习验证。")
     if state["phase"] == "feedback_ready" and state["lifecycle"] == "active":
         print("按回车或 /continue 继续。")
     if state["lifecycle"] in {"completed", "ended_with_gaps"}:
@@ -306,7 +392,7 @@ def chat(app, identifier, state):
     try:
         while True:
             if redraw:
-                print_session(state)
+                print_session(state, app.teaching_view(identifier))
             redraw = False
             if state["lifecycle"] in {"completed", "ended_with_gaps"}:
                 return
@@ -566,7 +652,7 @@ def dispatch(app, args):
                 f"后端：{binding[0]['name']} ({spec['type']}) | 模型：{spec['model'] or '后端默认'}"
             )
         if args.no_chat:
-            print_session(state)
+            print_session(state, app.teaching_view(identifier))
         else:
             chat(app, identifier, state)
     elif command == "sessions":
@@ -591,11 +677,11 @@ def dispatch(app, args):
     elif command == "answer":
         with DraftProgress(lazy=True) as progress:
             state = app.submit(args.session, args.text, progress=progress)
-        print_session(state)
+        print_session(state, app.teaching_view(args.session))
     elif command == "next":
         with DraftProgress() as progress:
             state = app.advance(args.session, progress=progress)
-        print_session(state)
+        print_session(state, app.teaching_view(args.session))
     elif command == "reassess":
         print(app.reassess(args.attempt, args.reason).model_dump_json(indent=2))
 
