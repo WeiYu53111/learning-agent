@@ -136,6 +136,7 @@ HTTP 模型网关使用 `/chat/completions`，要求符合 JSON Schema 的完整
 | `approve VERSION` | 人工确认当前修订 |
 | `publish VERSION` | 发布已确认修订 |
 | `clone VERSION` | 基于已有内容创建新草稿 |
+| `delete VERSION` | 永久删除未发布草稿及关联提取批次、事件和后端绑定；保留教材，拒绝删除已发布版本 |
 | `export VERSION FILE` | 导出草稿 JSON；不覆盖已有文件 |
 | `apply VERSION FILE` | 将编辑后的 JSON 应用到草稿 |
 | `revise VERSION --instruction "要求"` | 调用模型校正草稿 |

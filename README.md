@@ -182,6 +182,15 @@ teach resume SESSION
 | 学习会话 ID（SESSION） | `teach sessions` |
 | 作答 ID，供评分复核使用 | `teach attempts SESSION` |
 
+删除不再需要的未发布草稿（包括未完成提取的草稿）：
+
+```powershell
+teach drafts
+teach delete VERSION
+```
+
+将 `VERSION` 替换为列表中的完整草稿 ID。删除立即生效且不可恢复，同时清理该草稿的提取批次、事件和后端绑定，保留教材 PDF 和其他版本。已发布版本不允许删除。使用自定义数据目录时运行 `teach --data-dir PATH delete VERSION`。
+
 `teach drafts` 包括草稿和已发布版本，按创建时间从新到旧展示。现在以教材和章节名称为主，不再要求用户仅凭内部 ID 区分：
 
 ```text

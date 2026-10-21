@@ -40,6 +40,8 @@ def parser():
     command.add_argument("--pages", help="只处理章节中的物理页范围，例如 1:5")
     command.add_argument("--resume", metavar="VERSION")
     sub.add_parser("drafts")
+    command = sub.add_parser("delete", help="永久删除未发布草稿及其关联数据")
+    command.add_argument("version", metavar="VERSION")
     for name in ["inspect", "review", "audit", "approve", "publish", "clone"]:
         command = sub.add_parser(name)
         command.add_argument("version")
@@ -363,6 +365,9 @@ def dispatch(app, args):
         print(f"下一步：teach audit {identifier}，然后 teach review {identifier}")
     elif command == "drafts":
         list_drafts(app)
+    elif command == "delete":
+        app.delete_draft(args.version)
+        print(f"已删除草稿：{args.version}")
     elif command == "inspect":
         inspect(app, args.version)
     elif command == "source":

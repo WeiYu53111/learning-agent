@@ -128,6 +128,20 @@ class Application:
             result.append(current)
         return result
 
+    def delete_draft(self, identifier):
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM versions WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None:
+                raise AppError(f"找不到 {identifier}，请使用 teach drafts 列表中的完整 ID。")
+            if row["status"] != "draft":
+                raise AppError("不能删除已发布版本；teach delete 仅支持未发布草稿。")
+            conn.execute("DELETE FROM draft_batches WHERE version_id=?", (identifier,))
+            conn.execute("DELETE FROM events WHERE owner_id=?", (identifier,))
+            conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (identifier,))
+            conn.execute("DELETE FROM versions WHERE id=?", (identifier,))
+
     def create_draft(self, book_id, section_id):
         book = self.book(book_id)
         if not self.section_chunks(book, section_id):

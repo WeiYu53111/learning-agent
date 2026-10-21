@@ -14,6 +14,7 @@ CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当�
 | `teach books` / `teach drafts` | 分别列出教材和内容版本 |
 | `teach outline BOOK` | 查看章节 ID 和物理页范围 |
 | `teach draft BOOK --section SECTION [--pages START:END]` | 生成草稿；失败用 `draft --resume VERSION` |
+| `teach delete VERSION` | 永久删除未发布草稿及其提取批次、事件和后端绑定；拒绝删除已发布版本 |
 | `teach inspect VERSION` | 展示草稿质量问题、引用与待确认项 |
 | `teach audit VERSION` / `teach review VERSION` | 模型审核 / 人工交互审核校正 |
 | `teach approve VERSION` / `teach publish VERSION` | 确认当前审核修订 / 发布已确认版本 |
