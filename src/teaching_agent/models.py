@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -51,6 +51,9 @@ class Rubric(Contract):
 
 class Question(Contract):
     stem: str = Field(min_length=1, max_length=6000)
+    parts: list[Annotated[str, Field(min_length=1, max_length=6000)]] = Field(
+        default_factory=list, max_length=3
+    )
     reference_answer: str = Field(min_length=1)
     rubric: list[Rubric] = Field(min_length=1)
     hints: list[str] = Field(default_factory=list, max_length=3)

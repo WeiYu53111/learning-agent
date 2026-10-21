@@ -66,7 +66,11 @@ teach review VERSION
 
 `teach start VERSION` 按先修顺序学习；`--point POINT` 选择知识点及必要前置；`--due` 只选择到期复习目标。`--no-chat` 只生成当前任务，便于脚本操作。
 
-直接输入答案，反馈后回车或 `/continue`。支持 `/hint`、`/explain`、`/skip`、`/why`、`/progress`、`/pause`。多行回答用 `/answer`，再用 `/end` 提交或 `/cancel` 取消。普通答案若以斜杠开头，可用 `//` 转义。
+默认回车换行，单独输入 `/end` 提交当前小问；多小问依次回答，全部完成后统一评分，仍算一次作答。反馈后回车或 `/continue`。`/cancel` 清空当前输入而保留已提交小问，`/answer` 为兼容提示入口。支持 `/hint`、`/explain`、`/skip`、`/why`、`/progress`、`/pause`。完整输入行及小问进度随会话保存，暂停、EOF、Ctrl+C 后可恢复。普通答案若以斜杠开头，可用 `//` 转义。
+
+最后一问或 `answer --text` 的回答落库后显示“回答已保存，正在评分，请稍候。”，等待期间每 15 秒更新耗时，评分校验并保存后显示“评分完成。”。恢复待完成评分时显示相同提示，沿用原作答记录。前面的小问只显示保存提示。
+
+出题引用须逐字匹配本次提供的原文且在对应片段内唯一。无效候选及具体错误记入 `task_rejected` 事件，并反馈给模型自动修正一次；修正后仍执行目标、动作、误解及题目重复校验。仍失败时不推进会话或增加作答，可 `/continue` 重新生成；重试不会复用事件中的失败候选。出题和修正期间均显示等待进度。
 
 最近一次独立失败之后，取得两道不同题组的独立达标证据，且无已确认的关键误解，才算掌握。单题要求加权分至少 0.8、所有关键要点满分。趋势分仅作展示。提示后的作答以 0.7 系数计入趋势，不构成独立通过。请求讲解会撤销当前题目，之后使用新题。
 
@@ -171,6 +175,8 @@ HTTP 模型网关使用 `/chat/completions`，要求符合 JSON Schema 的完整
 | 文件 | 职责 |
 | --- | --- |
 | `src/teaching_agent/cli.py` | 命令参数、审核与教学终端交互 |
+| `src/teaching_agent/answering.py` | 小问展示、旧题兼容拆分、多行回答缓冲与整题合并 |
+| `src/teaching_agent/progress.py` | 阶段提示、定期等待耗时、按需启动的评分进度 |
 | `src/teaching_agent/application.py` | 导入、草稿、审核发布、教学编排和恢复 |
 | `src/teaching_agent/models.py` | 知识、题目、审核和评分的数据契约 |
 | `src/teaching_agent/knowledge.py` | PDF 解析、引用校验、覆盖检查、先修排序 |

@@ -53,7 +53,7 @@ def test_demo_and_piped_review(tmp_path, monkeypatch, capsys):
     assert main(["--data-dir", str(root), "start", version, "--no-chat"]) == 0
     output = capsys.readouterr().out
     assert "离线演示" in output
-    assert "问题：" in output
+    assert "问题（第 1/1 问）" in output
 
 
 def test_single_writer_across_processes(tmp_path):
@@ -109,7 +109,7 @@ def test_real_cli_process_completes_teaching_and_exposes_attempts(tmp_path):
     assert "离线演示" in run("demo")
     version = Store(root).rows("SELECT id FROM versions")[0]["id"]
     run("review", version, answers="approve\npublish\n")
-    answers = "".join((lesson[1] + "\n\n") * 2 for lesson in LESSONS)
+    answers = "".join((lesson[1] + "\n/end\n\n") * 2 for lesson in LESSONS)
     assert "[completed/" in run("start", version, answers=answers)
     assert run("progress", version).count("mastered") == 3
     session = Store(root).rows("SELECT id FROM sessions")[0]["id"]

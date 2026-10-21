@@ -6,7 +6,9 @@ import time
 
 
 class DraftProgress:
-    def __init__(self, interval=15, stream=None):
+    def __init__(self, interval=15, stream=None, lazy=False):
+        self._lazy = lazy
+        self._active = False
         self.interval = interval
         self.stream = stream if stream is not None else sys.stderr
         self._stop = threading.Event()
@@ -17,10 +19,18 @@ class DraftProgress:
         self._thread = threading.Thread(target=self._heartbeat, daemon=True)
 
     def __enter__(self):
-        self._thread.start()
+        if not self._lazy:
+            self._start()
         return self
 
+    def _start(self):
+        self._started = self._phase_started = time.monotonic()
+        self._active = True
+        self._thread.start()
+
     def __exit__(self, *exc):
+        if not self._active:
+            return
         self._stop.set()
         self._thread.join()
         print(
@@ -32,6 +42,8 @@ class DraftProgress:
 
     def __call__(self, message):
         with self._lock:
+            if not self._active:
+                self._start()
             self._message = message
             self._phase_started = time.monotonic()
             print(f"[进度] {message}", file=self.stream, flush=True)

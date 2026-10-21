@@ -96,13 +96,22 @@ class ModelOperations:
             ),
             "task": (
                 "执行指定教学动作和目标，原样返回objective_key和action。DIAGNOSE只提问题；"
+                "一次题目最多三个小问，每问聚焦一个核心判断，不嵌套多个独立问题。"
+                "多小问题目将共同背景放在stem，各小问放在parts，stem不得重复小问。"
+                "单问题可使用stem并令parts=[]。参考答案和rubric覆盖整题全部小问。"
                 "REMEDIATE先针对错误讲解再给新场景题；REASSESS/REVIEW给新题；"
                 "EXPLAIN仅讲解且question=null。不要重复已见题或仅换措辞。"
                 "novelty_group表达场景和解法，不能仅生成随机ID。"
                 "关键误解要放入targeted_misconception_codes，并有对应rubric。"
                 "不能泄露检查题答案于讲解或提示中。"
+                "题目source_refs只能使用本次chunks中的id；quote必须逐字复制对应chunk的连续原文，"
+                "保留换行且在该chunk内仅出现一次，不得引用自行编写的题目场景。"
+                "若seen_questions包含validation_errors和rejected_task，该条是尚未展示的候选题，"
+                "请依据具体错误和本次原文修正其引用，保留有效题意、答案和评分标准；"
+                "它不属于已见题，返回修正后的完整Task，仍须遵守指定目标和动作。"
             ),
             "grade": (
+                "题目可能有共同背景stem和parts小问，须结合全部小问及整题回答统一评价。"
                 "按固定rubric逐项评估回答，接受合理同义表达。每项恰一次，credit为0/0.5/1；"
                 "给分必须引用回答原句，缺失项允许空引用。条件不足或题目错误返回"
                 "invalid_question，无法判断返回needs_review。不得凭用户自述已懂给分。"

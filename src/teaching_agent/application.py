@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .answering import answer_state, combined_answer, question_text
 from .backends import BackendRegistry, BackendSpec
 from .demo import DemoGateway
 from .gateway import Gateway, Settings
@@ -659,7 +660,7 @@ class Application:
         row = self.store.get("sessions", identifier)
         return row, json.loads(row["data"])
 
-    def advance(self, identifier):
+    def advance(self, identifier, progress=None):
         row, state = self.session(identifier)
         if state["phase"] not in {"planning", "feedback_ready"}:
             raise AppError("请先完成当前题或恢复待处理评分。")
@@ -667,7 +668,7 @@ class Application:
             return state
         ver, book, chunks = self.version(row["version_id"])
         draft = Draft.model_validate_json(ver["data"])
-        objectives, progress = draft.objectives(), self.progress(ver["id"])
+        objectives, mastery_progress = draft.objectives(), self.progress(ver["id"])
         evidence = self.evidence(ver["id"])
         unavailable = set(state["skipped"] + state["deferred"])
         current = None
@@ -678,7 +679,7 @@ class Application:
             if any(pre in unavailable for pre in obj.prerequisites):
                 unavailable.add(key)
                 continue
-            if progress[key]["status"] == "provisionally_mastered":
+            if mastery_progress[key]["status"] == "provisionally_mastered":
                 continue
             all_attempts = self.store.rows(
                 "SELECT id FROM attempts WHERE session_id=? AND objective_key=?", (identifier, key)
@@ -716,7 +717,7 @@ class Application:
             state["blocked"] = sorted(unavailable - set(state["skipped"] + state["deferred"]))
             self.store.save_session(identifier, row["revision"], state)
             return state
-        obj, mastery = objectives[current], progress[current]
+        obj, mastery = objectives[current], mastery_progress[current]
         action = {
             "unknown": "DIAGNOSE",
             "learning": "REASSESS",
@@ -726,7 +727,7 @@ class Application:
         history_rows = [e for e in evidence if e["objective_key"] == current]
         history = [
             {
-                "stem": e["question"]["stem"],
+                "stem": question_text(e["question"]),
                 "novelty_group": e["question"]["novelty_group"],
                 "feedback": e["assessment"]["feedback"],
             }
@@ -736,33 +737,58 @@ class Application:
         answered_stems = {item["stem"] for item in history}
         history.extend(
             {
-                "stem": q["stem"],
+                "stem": question_text(q),
                 "novelty_group": q["novelty_group"],
                 "feedback": "已展示但未作答，不得复用",
             }
             for q in seen
-            if q["stem"] not in answered_stems
+            if question_text(q) not in answered_stems
         )
         source_ids = {ref.chunk_id for ref in obj.source_refs}
         selected_chunks = [c for c in chunks if c.id in source_ids]
         gateway = self.gateway(book, identifier)
-        task = gateway.task(
-            obj, selected_chunks, action, history, [m.model_dump() for m in draft.misconceptions]
-        )
-        if task.objective_key != current or task.action != action or not task.question:
-            raise AppError("生成任务与指定目标或动作不符。")
-        if check_refs(task.question.source_refs, {c.id: c for c in selected_chunks}):
-            raise AppError("题目原文引用无效。")
+        task_history = list(history)
+        for generation in range(2):
+            if progress:
+                progress(
+                    ("新题引用无效，自动修正（1/1）" if generation else "生成下一题")
+                    + f"；后端/模型：{gateway.model}"
+                )
+            task = gateway.task(
+                obj, selected_chunks, action, task_history,
+                [m.model_dump() for m in draft.misconceptions],
+            )
+            if task.objective_key != current or task.action != action or not task.question:
+                raise AppError("生成任务与指定目标或动作不符。")
+            errors = check_refs(task.question.source_refs, {c.id: c for c in selected_chunks})
+            if not errors:
+                break
+            rejected = {
+                "objective_key": current,
+                "action": action,
+                "rejected_task": task.model_dump(),
+                "validation_errors": errors,
+                "model": gateway.model,
+                "repair_attempt": generation,
+            }
+            with self.store.connect() as conn:
+                self.store.event(conn, identifier, "task_rejected", rejected)
+            if generation:
+                raise AppError(
+                    "新题引用经一次自动修正仍未通过校验：" + "；".join(errors)
+                    + "。已保存的回答与评分不受影响，请 /continue 重试。"
+                )
+            task_history = history + [rejected]
         known_codes = {m.code for m in draft.misconceptions}
         if not set(task.question.targeted_misconception_codes) <= known_codes:
             raise AppError("题目引用了未知误解码。")
         if not set(mastery["misconceptions"]) <= set(task.question.targeted_misconception_codes):
             raise AppError("新题没有针对当前关键误解，请重试生成。")
         prior_groups = {q["novelty_group"] for q in seen}
-        prior_stems = {q["stem"].strip().casefold() for q in seen}
+        prior_stems = {question_text(q).strip().casefold() for q in seen}
         if (
             task.question.novelty_group in prior_groups
-            or task.question.stem.casefold() in prior_stems
+            or question_text(task.question.model_dump()).casefold() in prior_stems
         ):
             raise AppError("模型生成了已用场景。状态未推进，请重试或请求讲解。")
         state.update(
@@ -775,6 +801,8 @@ class Application:
             feedback=None,
             why=f"{current} 状态 {mastery['status']}，选择 {action}。",
         )
+        state.pop("answer_input", None)
+        answer_state(state)
         with self.store.connect() as conn:
             self.store.save_session(identifier, row["revision"], state, conn)
             self.store.event(
@@ -792,10 +820,51 @@ class Application:
             )
         return state
 
-    def submit(self, identifier, answer):
+    def answer_row(self, identifier):
         row, state = self.session(identifier)
         if state["phase"] != "awaiting_answer" or not state["task"]:
             raise AppError("当前没有待答题。")
+        answer_state(state)
+        return row, state
+
+    def append_answer_line(self, identifier, line):
+        row, state = self.answer_row(identifier)
+        saved = answer_state(state)
+        saved["lines"].append(line)
+        if len(combined_answer(saved, include_buffer=True)) > 10000:
+            raise AppError(
+                "整题回答最多 10000 字符（含小问标记和换行）；此行未保存，已有输入保留。"
+            )
+        self.store.save_session(identifier, row["revision"], state)
+        return state
+
+    def cancel_answer(self, identifier):
+        row, state = self.answer_row(identifier)
+        answer_state(state)["lines"] = []
+        self.store.save_session(identifier, row["revision"], state)
+        return state
+
+    def submit_part(self, identifier, progress=None):
+        row, state = self.answer_row(identifier)
+        saved = answer_state(state)
+        answer = "\n".join(saved["lines"])
+        if not answer.strip():
+            raise AppError("当前小问回答不能为空，请输入后用 /end 提交。")
+        saved["answers"].append(answer)
+        saved["lines"] = []
+        if len(saved["answers"]) < len(saved["parts"]):
+            self.store.save_session(identifier, row["revision"], state)
+            return state
+        return self._submit_answer(identifier, combined_answer(saved), row, state, progress=progress)
+
+    def submit(self, identifier, answer, progress=None):
+        row, state = self.answer_row(identifier)
+        saved = answer_state(state)
+        if saved["answers"] or saved["lines"]:
+            raise AppError(f"已有分步回答或输入，不能覆盖。请运行 teach resume {identifier} 继续。")
+        return self._submit_answer(identifier, answer, row, state, progress=progress)
+
+    def _submit_answer(self, identifier, answer, row, state, progress=None):
         if not answer.strip() or len(answer) > 10000:
             raise AppError("回答必须为 1–10000 字符。")
         question = state["task"]["question"]
@@ -819,7 +888,7 @@ class Application:
                 ),
             )
             self.store.save_session(identifier, row["revision"], state, conn)
-        return self.finish_assessment(identifier)
+        return self.finish_assessment(identifier, progress=progress)
 
     def assess(self, attempt):
         ver, book, chunks = self.version(attempt["version_id"])
@@ -841,12 +910,19 @@ class Application:
             assessment.status = "needs_review"
         return assessment, gateway.model
 
-    def finish_assessment(self, identifier):
+    def finish_assessment(self, identifier, progress=None):
         row, state = self.session(identifier)
         if state["phase"] != "evaluating" or not state["pending_attempt"]:
             raise AppError("没有待恢复的评分。")
         attempt = self.store.get("attempts", state["pending_attempt"])
-        assessment, model = self.assess(attempt)
+        if progress:
+            progress("回答已保存，正在评分，请稍候。")
+        try:
+            assessment, model = self.assess(attempt)
+        except AppError as exc:
+            raise AppError(
+                f"{exc} 回答已保存，可运行 teach resume {identifier} 恢复评分。"
+            ) from exc
         state.update(phase="feedback_ready", feedback=assessment.model_dump(), pending_attempt=None)
         with self.store.connect() as conn:
             conn.execute(
@@ -862,6 +938,8 @@ class Application:
                 ),
             )
             self.store.save_session(identifier, row["revision"], state, conn)
+        if progress:
+            progress("评分完成。")
         return state
 
     def reassess(self, attempt_id, reason):
@@ -927,6 +1005,7 @@ class Application:
         if state["current"] and state["current"] not in state["skipped"]:
             state["skipped"].append(state["current"])
         state.update(phase="planning", task=None)
+        state.pop("answer_input", None)
         self.store.save_session(identifier, row["revision"], state)
         return self.advance(identifier)
 
@@ -936,7 +1015,7 @@ class Application:
             state["lifecycle"] = "paused"
             self.store.save_session(identifier, row["revision"], state)
 
-    def resume(self, identifier):
+    def resume(self, identifier, progress=None):
         row, state = self.session(identifier)
         if state["lifecycle"] in {"completed", "ended_with_gaps"}:
             return state
@@ -953,11 +1032,14 @@ class Application:
                 for pre in draft.objectives()[current].prerequisites
             ):
                 state.update(phase="planning", task=None)
+                state.pop("answer_input", None)
+        if state["phase"] == "awaiting_answer":
+            answer_state(state)
         self.store.save_session(identifier, row["revision"], state)
         if state["phase"] == "evaluating":
-            return self.finish_assessment(identifier)
+            return self.finish_assessment(identifier, progress=progress)
         if state["phase"] == "planning":
-            return self.advance(identifier)
+            return self.advance(identifier, progress=progress)
         return state
 
     def explain(self, identifier):
@@ -969,6 +1051,7 @@ class Application:
         obj = draft.objectives()[state["current"]]
         # Revoke the question before a remote call; a failure must not restore independence.
         state.update(phase="planning", task=None)
+        state.pop("answer_input", None)
         self.store.save_session(identifier, row["revision"], state)
         refs = {r.chunk_id for r in obj.source_refs}
         task = self.gateway(book, identifier).task(

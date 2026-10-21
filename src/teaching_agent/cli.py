@@ -13,6 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
+from .answering import answer_state
 from .application import Application
 from .backends import BackendRegistry
 from .demo import make_pdf
@@ -215,8 +216,15 @@ def print_session(state):
         if task["explanation"]:
             print("讲解：" + task["explanation"])
         if state["phase"] == "awaiting_answer" and task.get("question"):
-            print("问题：" + task["question"]["stem"])
-            print("直接输入回答；/hint 提示，/explain 讲解，/skip 跳过，/pause 暂停。")
+            saved = answer_state(state)
+            index = len(saved["answers"])
+            if saved["context"]:
+                print("共同背景：" + saved["context"])
+            print(f"问题（第 {index + 1}/{len(saved['parts'])} 问）：{saved['parts'][index]}")
+            print("回车换行；/end 提交当前小问，全部完成后统一评分；/cancel 清空当前输入。")
+            print("/hint 提示，/explain 讲解，/skip 跳过目标，/pause 保存暂停。")
+            if saved["lines"]:
+                print("已保存的当前输入：\n" + "\n".join(saved["lines"]))
     if state.get("feedback"):
         feedback = state["feedback"]
         print(f"评估状态：{feedback['status']}\n{feedback['feedback']}")
@@ -294,9 +302,12 @@ def review_loop(app, identifier):
 
 
 def chat(app, identifier, state):
+    redraw = True
     try:
         while True:
-            print_session(state)
+            if redraw:
+                print_session(state)
+            redraw = False
             if state["lifecycle"] in {"completed", "ended_with_gaps"}:
                 return
             try:
@@ -306,37 +317,45 @@ def chat(app, identifier, state):
                     print(f"已暂停。恢复：teach resume {identifier}")
                     return
                 if answer == "/help":
-                    print("/hint /explain /skip /progress /why /continue /answer /pause")
+                    print("回车换行，/end 提交小问，/cancel 清空当前输入；")
+                    print(
+                        "/hint /explain /skip /progress /why /continue /answer /pause；"
+                        "// 输入字面斜线。"
+                    )
                 elif answer == "/why":
                     print(state["why"])
                 elif answer == "/progress":
                     print_progress(app, app.session(identifier)[0]["version_id"])
                 elif answer == "/hint":
                     print(app.hint(identifier))
+                    _, state = app.session(identifier)
                 elif answer == "/explain":
                     state = app.explain(identifier)
+                    redraw = True
                 elif answer == "/skip":
                     state = app.skip(identifier)
+                    redraw = True
                 elif answer == "/continue" or (
                     state["phase"] == "feedback_ready" and answer in {"", "继续"}
                 ):
-                    state = app.advance(identifier)
+                    with DraftProgress() as progress:
+                        state = app.advance(identifier, progress=progress)
+                    redraw = True
                 elif answer == "/answer":
-                    print("多行回答：/end 提交，/cancel 取消。")
-                    lines = []
-                    while True:
-                        line = input("... ")
-                        if line in {"/end", "/cancel"}:
-                            break
-                        lines.append(line)
-                        if sum(map(len, lines)) > 10000:
-                            raise AppError("回答超过上限，请重新输入。")
-                    if line == "/end":
-                        state = app.submit(identifier, "\n".join(lines))
+                    print("已默认使用多行输入：回车换行，/end 提交当前小问，/cancel 清空当前输入。")
+                elif answer == "/end":
+                    with DraftProgress(lazy=True) as progress:
+                        state = app.submit_part(identifier, progress=progress)
+                    if state["phase"] == "awaiting_answer":
+                        print("当前小问已保存；全部完成后统一评分。")
+                    redraw = True
+                elif answer == "/cancel":
+                    state = app.cancel_answer(identifier)
+                    print("已清空当前输入，已提交的小问保留。")
                 elif answer.startswith("/") and not answer.startswith("//"):
                     print("未知命令，使用 /help。")
                 else:
-                    state = app.submit(
+                    state = app.append_answer_line(
                         identifier, answer[1:] if answer.startswith("//") else answer
                     )
             except AppError as exc:
@@ -523,7 +542,8 @@ def dispatch(app, args):
                     return
             identifier = app.start(args.version, args.point, args.due)
             print(f"会话：{identifier}", flush=True)
-            state = app.advance(identifier)
+            with DraftProgress() as progress:
+                state = app.advance(identifier, progress=progress)
         else:
             identifier = args.session
             if not identifier:
@@ -535,7 +555,8 @@ def dispatch(app, args):
                 if len(candidates) != 1:
                     raise AppError("请用 teach sessions 查询并指定要恢复的会话。")
                 identifier = candidates[0]["id"]
-            state = app.resume(identifier)
+            with DraftProgress(lazy=True) as progress:
+                state = app.resume(identifier, progress=progress)
         binding = app.store.rows(
             "SELECT name,spec FROM backend_bindings WHERE owner_id=?", (identifier,)
         )
@@ -568,9 +589,13 @@ def dispatch(app, args):
             print(f"  回答：{row['answer']}")
             print(f"  评分后端/模型：{row['model'] or '-'}")
     elif command == "answer":
-        print_session(app.submit(args.session, args.text))
+        with DraftProgress(lazy=True) as progress:
+            state = app.submit(args.session, args.text, progress=progress)
+        print_session(state)
     elif command == "next":
-        print_session(app.advance(args.session))
+        with DraftProgress() as progress:
+            state = app.advance(args.session, progress=progress)
+        print_session(state)
     elif command == "reassess":
         print(app.reassess(args.attempt, args.reason).model_dump_json(indent=2))
 

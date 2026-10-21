@@ -121,7 +121,8 @@ class DemoGateway:
         ]
         count = len(history)
         q = objective.sample_question.model_copy(deep=True)
-        q.stem = scenes[index][count % 3]
+        q.stem = "请根据下面的场景回答。"
+        q.parts = [scenes[index][count % 3]]
         q.novelty_group = f"demo-{index}-{count % 3}"
         return Task(
             objective_key=objective.key,
