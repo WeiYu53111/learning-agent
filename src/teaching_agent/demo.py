@@ -94,6 +94,9 @@ class DemoGateway:
     def revise(self, draft, chunks, instruction):
         raise AppError("离线演示不模拟自然语言校正。请使用 review 的 edit/pre/exclude 或JSON编辑。")
 
+    def revise_patch(self, draft, chunks, instruction):
+        raise AppError("离线演示不模拟自然语言局部修订，请使用真实模型后端或人工编辑。")
+
     def task(self, objective, chunks, action, history, misconceptions):
         index = int(objective.key.rsplit("o", 1)[1]) - 1
         _, text, _ = LESSONS[index]

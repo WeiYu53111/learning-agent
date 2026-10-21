@@ -90,6 +90,25 @@ def test_codex_failures_do_not_return_success(monkeypatch, failure):
         assert len(calls) == 1
 
 
+def test_codex_input_limit_reports_size_before_launch(monkeypatch):
+    from teaching_agent import codex_gateway
+
+    monkeypatch.setattr(codex_gateway.shutil, "which", lambda _: "codex.exe")
+    payload = {"private_material": "教材内容"}
+    expected = len(json.dumps(payload, ensure_ascii=False)) + len(
+        json.dumps(strict_schema(Audit.model_json_schema()), ensure_ascii=False)
+    )
+    gateway = CodexGateway(BackendSpec(type="codex_cli", input_chars=1))
+    monkeypatch.setattr(gateway, "run", lambda *a, **kw: pytest.fail("must not launch"))
+    with pytest.raises(AppError) as error:
+        gateway.call("audit", payload, Audit)
+    message = str(error.value)
+    assert f"{expected} 字符" in message
+    assert "input_chars=1" in message
+    assert "--backend" in message
+    assert "教材内容" not in message
+
+
 def test_codex_timeout_is_recoverable(monkeypatch, tmp_path):
     def fail(*args, **kwargs):
         raise subprocess.TimeoutExpired("codex", 1)
@@ -127,7 +146,8 @@ def test_v1_migration_retains_data(tmp_path):
     store.initialize()
     store.initialize()
     assert store.get("books", "b")["sha256"] == "hash"
-    assert store.rows("PRAGMA user_version")[0]["user_version"] == 2
+    assert store.rows("PRAGMA user_version")[0]["user_version"] == 3
+    assert store.rows("SELECT * FROM preparations") == []
     assert store.rows("SELECT * FROM backend_bindings") == []
 
 

@@ -10,7 +10,8 @@ from .demo import DemoGateway
 from .gateway import Gateway, Settings
 from .knowledge import check_refs, ordered_objectives, parse_pdf, quality_report
 from .learner import project, score, validate_assessment
-from .models import AppError, Assessment, Audit, Book, Draft, Question
+from .models import AppError, Assessment, Audit, Book, Draft, DraftPatch, Question
+from .revision import change_summary, merge_patch
 from .storage import Store, dumps, now, uid
 
 
@@ -128,16 +129,45 @@ class Application:
             result.append(current)
         return result
 
+    def delete_book(self, identifier):
+        with self.store.connect() as conn:
+            row = conn.execute("SELECT sha256 FROM books WHERE id=?", (identifier,)).fetchone()
+            if row is None:
+                raise AppError(f"找不到 {identifier}，请使用 teach books 列表中的完整 ID。")
+            versions = conn.execute(
+                "SELECT id,status FROM versions WHERE book_id=? ORDER BY created_at,id",
+                (identifier,),
+            ).fetchall()
+            if versions:
+                details = "、".join(f"{v['id']} ({v['status']})" for v in versions)
+                raise AppError(
+                    f"教材仍有关联版本：{details}。"
+                    "请先用 teach delete VERSION 删除未发布草稿；有已发布版本的教材不能删除。"
+                )
+            digest = row["sha256"]
+            if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                raise AppError("教材文件摘要无效，无法安全定位 PDF。")
+            document = self.store.root / "documents" / f"{digest}.pdf"
+            if not document.resolve().is_relative_to(self.store.root.resolve()):
+                raise AppError("教材 PDF 路径超出数据目录，停止删除。")
+            conn.execute("DELETE FROM events WHERE owner_id=?", (identifier,))
+            conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (identifier,))
+            conn.execute("DELETE FROM books WHERE id=?", (identifier,))
+        # Remove the copy only after commit, so a database failure cannot lose the PDF.
+        try:
+            document.unlink(missing_ok=True)
+        except OSError as exc:
+            raise AppError(f"教材记录已删除，但 PDF 副本清理失败，请手动删除：{document}") from exc
+
     def delete_draft(self, identifier):
         with self.store.connect() as conn:
-            row = conn.execute(
-                "SELECT status FROM versions WHERE id=?", (identifier,)
-            ).fetchone()
+            row = conn.execute("SELECT status FROM versions WHERE id=?", (identifier,)).fetchone()
             if row is None:
                 raise AppError(f"找不到 {identifier}，请使用 teach drafts 列表中的完整 ID。")
             if row["status"] != "draft":
                 raise AppError("不能删除已发布版本；teach delete 仅支持未发布草稿。")
             conn.execute("DELETE FROM draft_batches WHERE version_id=?", (identifier,))
+            conn.execute("DELETE FROM preparations WHERE version_id=?", (identifier,))
             conn.execute("DELETE FROM events WHERE owner_id=?", (identifier,))
             conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (identifier,))
             conn.execute("DELETE FROM versions WHERE id=?", (identifier,))
@@ -168,7 +198,11 @@ class Application:
             )
         return identifier
 
-    def build_draft(self, identifier):
+    def build_draft(self, identifier, progress=None):
+        def report_progress(message):
+            if progress is not None:
+                progress(message)
+
         row, book, chunks = self.version(identifier)
         if row["status"] != "draft" or row["data"] != "{}":
             raise AppError("草稿已完成提取；请使用 revise 或编辑，而不是覆盖。")
@@ -180,8 +214,15 @@ class Application:
             )
         }
         partials = []
+        report_progress(
+            f"共 {len(chunks)} 个文本块，分为 {len(batches)} 批；已保存 {len(cached)} 批"
+        )
         for position, batch in enumerate(batches):
+            label = (
+                f"第 {position + 1}/{len(batches)} 批（PDF 页 {batch[0].page}–{batch[-1].page}）"
+            )
             if position in cached:
+                report_progress(f"{label}：复用已保存结果")
                 partial = Draft.model_validate_json(cached[position])
             else:
                 gateway = self.gateway(book, identifier)
@@ -198,14 +239,22 @@ class Application:
                     ),
                     None,
                 )
+                report_progress(
+                    f"{label}：{'恢复已保存候选' if previous else '等待模型提取'}"
+                    f"；后端/模型：{gateway.model}"
+                )
                 partial = (
                     Draft.model_validate(previous["candidate"])
                     if previous
                     else gateway.extract(batch)
                 )
+                report_progress(f"{label}：校验提取结果")
                 report = quality_report(partial, batch)
                 if report["errors"]:
                     self.save_rejected_batch(identifier, position, partial, report, gateway.model)
+                    report_progress(
+                        f"{label}：发现 {len(report['errors'])} 项错误，等待模型自动校正"
+                    )
                     partial = gateway.revise(
                         partial,
                         batch,
@@ -214,6 +263,7 @@ class Application:
                         "有重复时扩展连续原文上下文（保留换行），不要猜测第一次出现的位置，"
                         "也不要删掉目标或内容清单来绕过检查。\n" + "\n".join(report["errors"]),
                     )
+                    report_progress(f"{label}：校验自动校正结果")
                     report = quality_report(partial, batch)
                     if report["errors"]:
                         self.save_rejected_batch(
@@ -237,6 +287,7 @@ class Application:
                             "model": gateway.model,
                         },
                     )
+                report_progress(f"{label}：已保存")
             value = partial.model_dump()
             prefix = f"b{position}_"
             for point in value["points"]:
@@ -264,7 +315,9 @@ class Application:
         }
         if len(partials) > 1:
             combined["notes"].append("多批提取：请人工检查跨批重复和前置关系。")
+        report_progress("合并各批结果并保存草稿")
         self.save_draft(identifier, Draft.model_validate(combined), "分批提取完成")
+        report_progress("草稿提取完成")
 
     def save_rejected_batch(self, identifier, position, partial, report, model):
         with self.store.connect() as conn:
@@ -280,7 +333,7 @@ class Application:
                 },
             )
 
-    def save_draft(self, identifier, draft: Draft, reason):
+    def save_draft(self, identifier, draft: Draft, reason, preparation=None):
         row, _, _ = self.version(identifier)
         if row["status"] != "draft":
             raise AppError("已发布内容不可修改，请先 clone 创建新草稿。")
@@ -300,6 +353,129 @@ class Application:
                     "after": draft.model_dump(),
                 },
             )
+            if preparation is None:
+                conn.execute("DELETE FROM preparations WHERE version_id=?", (identifier,))
+            else:
+                preparation["revision"] = row["revision"] + 1
+                self.save_preparation(identifier, preparation, conn)
+
+    def preparation(self, identifier):
+        # Read-only commands must remain usable on databases not yet migrated.
+        if not self.store.rows("SELECT name FROM sqlite_master WHERE name='preparations'"):
+            return None
+        rows = self.store.rows("SELECT data FROM preparations WHERE version_id=?", (identifier,))
+        return json.loads(rows[0]["data"]) if rows else None
+
+    def save_preparation(self, identifier, state, conn=None):
+        if conn is None:
+            with self.store.connect() as tx:
+                return self.save_preparation(identifier, state, tx)
+        conn.execute(
+            "INSERT INTO preparations VALUES(?,?) "
+            "ON CONFLICT(version_id) DO UPDATE SET data=excluded.data",
+            (identifier, dumps(state)),
+        )
+
+    def prepare(self, identifier, retry=False, progress=None):
+        from .preparation import prepare
+
+        return prepare(self, identifier, retry=retry, progress=progress)
+
+    @staticmethod
+    def report_patch_metrics(metrics, emit):
+        emit("修订：已收到局部修改包")
+        if metrics:
+            emit(
+                f"修订调用耗时 {metrics['elapsed_seconds']:.1f} 秒；"
+                f"输入数据 {metrics['input_data_chars']} 字符（不含提示词和 Schema）；"
+                f"修改包 {metrics['patch_chars']} 字符，完整草稿 {metrics['draft_chars']} 字符"
+            )
+
+    def revise(self, identifier, instruction, progress=None):
+        emit = progress or (lambda message: None)
+        row, book, chunks = self.version(identifier)
+        if row["status"] != "draft":
+            raise AppError("请先 clone 已发布版本。")
+        draft = Draft.model_validate_json(row["data"])
+        events = self.store.rows(
+            "SELECT kind,data FROM events WHERE owner_id=? AND "
+            "kind IN ('revision_patch_received','revision_patch_processed') ORDER BY id DESC",
+            (identifier,),
+        )
+        completed, saved = set(), None
+        for event in events:
+            value = json.loads(event["data"])
+            if event["kind"] == "revision_patch_processed":
+                completed.add(value["request_id"])
+            elif (
+                value["request_id"] not in completed
+                and value["revision"] == row["revision"]
+                and value["instruction"] == instruction
+            ):
+                saved = value
+                break
+        if saved:
+            emit("修订：复用已保存修改包，不重复模型调用")
+        else:
+            gateway = self.gateway(book, identifier)
+            emit(f"修订：检查请求大小并等待局部修订；后端/模型：{gateway.model}")
+            patch = gateway.revise_patch(draft, chunks, instruction)
+            saved = {
+                "request_id": uid("patch"),
+                "revision": row["revision"],
+                "instruction": instruction,
+                "patch": patch.model_dump(),
+                "metrics": getattr(gateway, "last_revision_metrics", None),
+            }
+            with self.store.connect() as conn:
+                self.store.event(conn, identifier, "revision_patch_received", saved)
+        self.report_patch_metrics(saved["metrics"], emit)
+        try:
+            emit("修订：合并修改包，保留未改动内容")
+            candidate = merge_patch(draft, DraftPatch.model_validate(saved["patch"]))
+            emit("修订：校验完整草稿的引用、覆盖和依赖")
+            errors = quality_report(candidate, chunks)["errors"]
+            if errors:
+                raise AppError("；".join(errors[:5]))
+        except AppError as exc:
+            with self.store.connect() as conn:
+                self.store.event(
+                    conn,
+                    identifier,
+                    "revision_patch_processed",
+                    {
+                        "request_id": saved["request_id"],
+                        "outcome": "rejected",
+                    },
+                )
+                self.store.event(
+                    conn,
+                    identifier,
+                    "revision_rejected",
+                    {"patch": saved["patch"], "errors": [str(exc)]},
+                )
+            raise AppError("修订未通过，原草稿未覆盖：" + str(exc)) from exc
+        self.save_draft(identifier, candidate, instruction)
+        summary = change_summary(draft, candidate)
+        with self.store.connect() as conn:
+            self.store.event(
+                conn,
+                identifier,
+                "revision_patch_processed",
+                {
+                    "request_id": saved["request_id"],
+                    "outcome": "saved",
+                    "changes": summary,
+                },
+            )
+        for name, counts in summary.items():
+            if isinstance(counts, dict):
+                emit(
+                    f"修订变更 {name}：新增 {counts['added']}、"
+                    f"删除 {counts['removed']}、修改 {counts['updated']}"
+                )
+        emit("修订：新草稿已保存，需重新审核")
+        return candidate
 
     def clone(self, identifier):
         row, book, _ = self.version(identifier)
@@ -307,8 +483,18 @@ class Application:
         self.save_draft(new_id, Draft.model_validate_json(row["data"]), f"派生自 {identifier}")
         return new_id
 
-    def audit(self, identifier):
+    def audit(self, identifier, progress=None, preparation=None):
+        emit = progress or (lambda message: None)
+        label = (
+            f"第 {preparation['rounds']}/2 轮再审核"
+            if preparation and preparation["rounds"]
+            else "首次审核"
+        )
+        emit(f"{label}：检查草稿结构、引用和覆盖")
         row, book, chunks = self.version(identifier)
+        task = preparation or self.preparation(identifier)
+        if task and task["revision"] != row["revision"]:
+            task = None
         if row["status"] != "draft":
             raise AppError("已发布版本无需重新审核；请派生草稿。")
         draft = Draft.model_validate_json(row["data"])
@@ -318,7 +504,9 @@ class Application:
         # Whole-draft audit also checks cross-batch ordering. Oversized input is rejected,
         # never silently truncated. User can select a smaller page range when importing.
         gateway = self.gateway(book, identifier)
+        emit(f"{label}：检查请求大小并等待模型返回；后端/模型：{gateway.model}")
         audit = gateway.audit(draft, chunks)
+        emit(f"{label}：校验审核报告引用")
         chunk_map = {c.id: c for c in chunks}
         for issue in audit.issues:
             if check_refs(issue.source_refs, chunk_map):
@@ -331,6 +519,17 @@ class Application:
             )
             self.store.event(conn, identifier, "audit", audit.model_dump())
             self.store.event(conn, identifier, "audit_backend", {"model": gateway.model})
+            if task is not None:
+                # An explicit audit must not reset the bounded repair budget or lose a candidate.
+                task["issues"] = [issue.model_dump() for issue in audit.issues]
+                if task["candidate"] is None and task["phase"] != "merge":
+                    task["phase"] = "evaluate"
+                self.save_preparation(identifier, task, conn)
+        errors_count = sum(issue.severity == "error" for issue in audit.issues)
+        emit(
+            f"{label}：报告已保存，{errors_count} 项 error，"
+            f"{len(audit.issues) - errors_count} 项 warning"
+        )
         return audit
 
     def resolve_issue(self, identifier, index, note):
@@ -359,11 +558,10 @@ class Application:
             errors.append("当前修订尚未完成审核。")
         else:
             audit = Audit.model_validate_json(row["audit"])
-            decisions = json.loads(row["decisions"])
             errors.extend(
                 f"审核问题 {i + 1} 尚未处理。"
                 for i, issue in enumerate(audit.issues)
-                if issue.severity == "error" and str(i) not in decisions
+                if issue.severity == "error"
             )
         if errors:
             raise AppError("不能确认：" + "；".join(errors))
@@ -377,6 +575,10 @@ class Application:
             return
         if row["approved_revision"] != row["revision"]:
             raise AppError("必须先审核并人工 approve 当前修订。")
+        if row["reviewed_revision"] != row["revision"] or not row["audit"]:
+            raise AppError("必须先审核当前修订。")
+        if any(i.severity == "error" for i in Audit.model_validate_json(row["audit"]).issues):
+            raise AppError("存在审核 error，人工备注不能放行，请修订并重新审核。")
         if quality_report(Draft.model_validate_json(row["data"]), chunks)["errors"]:
             raise AppError("结构校验失败。")
         with self.store.connect() as conn:

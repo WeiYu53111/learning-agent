@@ -97,7 +97,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise AppError("数据库版本不兼容，请使用新的数据目录。")
             if version == 0:
                 conn.executescript(SCHEMA)
@@ -107,6 +107,12 @@ class Store:
                     "owner_id TEXT PRIMARY KEY,name TEXT NOT NULL,spec TEXT NOT NULL)"
                 )
                 conn.execute("PRAGMA user_version=2")
+            if version < 3:
+                conn.execute(
+                    "CREATE TABLE preparations(version_id TEXT PRIMARY KEY "
+                    "REFERENCES versions(id),data TEXT NOT NULL)"
+                )
+                conn.execute("PRAGMA user_version=3")
             conn.execute("PRAGMA journal_mode=WAL")
 
     @contextmanager

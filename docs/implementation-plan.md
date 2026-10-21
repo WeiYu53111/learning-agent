@@ -1,10 +1,10 @@
 # 实施与验收
 
-状态：已完成 CLI 原型及可替换后端集成。2026-10-20 完整回归为 41 项测试通过、Ruff 检查通过。支持新原型 schema 1 → 2 升级，不兼容已删除的旧系统数据库。下文完整验收目标不代表全部已通过。
+状态：已完成 CLI 原型及可替换后端集成。2026-10-20 完整回归为 41 项测试通过、Ruff 检查通过。支持新原型 schema 1/2 → 3 升级，不兼容已删除的旧系统数据库。下文完整验收目标不代表全部已通过。
 
 ## 本次后端实现与验收
 
-当前代码采用扁平模块：`application.py` 编排与后端绑定，`models.py` 契约，`knowledge.py` 教材校验，`learner.py` 证据归约，`storage.py` schema 2。新增 `backends.py` 实现 ModelBackend、BackendSpec 和 BackendRegistry；`gateway.py` 包含共用任务及 HTTP 适配，`codex_gateway.py` 执行 Codex 子进程，`demo.py` 提供演示后端。
+当前代码采用扁平模块：`application.py` 编排与后端绑定，`models.py` 契约，`knowledge.py` 教材校验，`learner.py` 证据归约，`storage.py` schema 3。新增 `backends.py` 实现 ModelBackend、BackendSpec 和 BackendRegistry；`gateway.py` 包含共用任务及 HTTP 适配，`codex_gateway.py` 执行 Codex 子进程，`demo.py` 提供演示后端。
 
 | 场景 | 当前结果 |
 | --- | --- |
@@ -15,7 +15,7 @@
 | 代理与临时文件 | 环境继承、结果目录清理测试通过 |
 | 会话后端恢复 | 原配置文件删除后仍沿用快照；显式切换记录事件 |
 | 评分失败恢复 | 同一 Attempt 恢复评分，无重复作答 |
-| 数据升级 | schema 1 数据保留，升级到 2 后重复初始化正常 |
+| 数据升级 | schema 1 数据保留，升级到 3 后重复初始化正常 |
 | 真实最小调用 | 已有 ChatGPT 登录及本地 7897 端口代理返回合法 `{"issues":[]}` |
 | 教学语义质量 | 尚未用人工标注教材/答案集完成验收 |
 

@@ -33,7 +33,10 @@ def test_invalid_reference_is_repaired_before_batch_saved(app, tmp_path):
         return healthy
 
     app.injected_gateway.revise = revise
-    app.build_draft(version)
+    messages = []
+    app.build_draft(version, progress=messages.append)
+    assert any("等待模型自动校正" in message for message in messages)
+    assert any("校验自动校正结果" in message for message in messages)
     assert len(instructions) == 1
     assert "引用不唯一" in instructions[0] and "列表" in instructions[0]
     assert app.version(version)[0]["data"] != "{}"

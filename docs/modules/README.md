@@ -16,7 +16,7 @@
 | [学习者模型](learner.md) | 证据归约、误解、评分修订和复习调度 |
 | [教学策略](policy.md) | 依赖规划、动作优先级、补救与停止预算 |
 | [LLM 网关](llm.md) | ModelBackend、HTTP/Codex/演示适配、结构化契约和后端预算 |
-| [存储与运行配置](storage.md) | schema 2、后端绑定与来源、TOML/环境配置、认证及迁移 |
+| [存储与运行配置](storage.md) | schema 3、后端绑定与来源、TOML/环境配置、认证及迁移 |
 
 ## 公共约定
 

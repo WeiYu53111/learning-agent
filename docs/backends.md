@@ -1,6 +1,6 @@
 # 可替换模型后端
 
-教学模块通过 `ModelBackend` 接口调用 `extract/audit/revise/task/grade`。当前提供 HTTP API、Codex CLI 和内置离线演示三个适配器。教材审核、掌握判定、数据库和恢复仍由 teach 管理。
+教学模块通过 `ModelBackend` 接口调用 `extract/audit/revise/revise_patch/task/grade`。自动准备与独立修订使用 `revise_patch` 返回局部修改包，`revise` 保留给提取批次校正。HTTP API 和 Codex CLI 共用 DraftPatch 契约及提示词，离线演示明确不支持自然语言修订。教材审核、掌握判定、数据库和恢复仍由 teach 管理。
 
 ## 1. 选择配置
 
@@ -72,6 +72,10 @@ output_tokens = 8000
 ```
 
 `timeout_seconds` 是 HTTP 操作预算，`request_timeout_seconds` 是单次请求超时；两者取较小值限制每次请求。原有格式修复和网络重试规则保留。`input_chars` 对 HTTP/Codex 都有效；`output_tokens` 与 `request_timeout_seconds` 仅用于 HTTP。
+
+项目 `teach.toml` 中 `local_codex` 的 `input_chars` 设置为 96000，以容纳合并后的草稿修订输入。未配置时仍默认 48000。Codex 按请求数据和输出 JSON Schema 的字符数检查；局部修订仍输入完整草稿，DraftPatch 的 Schema 也比审核报告大，因此仍可能出现审核成功而修订超限。超限提示给出实际字符数和上限；调整配置后使用 `--backend local_codex` 显式覆盖旧绑定。这个值是应用侧限制，不是模型上下文容量承诺。
+
+`revise_patch` 成功后提供 `last_revision_metrics`：输入数据字符数、紧凑 JSON 修改包与完整草稿字符数、调用耗时。应用保存这些计数，不额外打印原始请求。该指标不含提示词及 Schema，不等同于输入上限检查值或实际 token 用量。网络或契约失败不产生成功指标，不回退到全量修订。
 
 ## 5. 数据和验收
 

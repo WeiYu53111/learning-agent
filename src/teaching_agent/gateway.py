@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import httpx
 from pydantic import ValidationError
 
-from .models import AppError, Assessment, Audit, Draft, Task
+from .models import AppError, Assessment, Audit, Draft, DraftPatch, Task
 
 
 @dataclass
@@ -75,12 +75,24 @@ class ModelOperations:
             ),
             "audit": (
                 "审核原文与草稿：遗漏、粒度、重复、前置、适用条件、代表题及评分标准。"
-                "结构通过不等于语义正确。问题必须具体，附原文引用；重要遗漏或错误为error，"
-                "可选改进为warning。没有证据不得编造问题。"
+                "结构通过不等于语义正确。问题必须具体，附原文引用。知识错误、重要遗漏、"
+                "题干未要求却评分扣分等评分不公平、影响学习的前置关系错误必须标为error。"
+                "只有不影响正确性、覆盖及评分公平的可选改进才是warning。"
+                "不得为了通过审核降低严重程度；没有证据不得编造问题。"
             ),
             "revise": (
                 "根据人工修改要求校正整个草稿，返回完整Draft。保留未受影响的key与原文引用。"
                 "可拆分合并、补充、调整依赖，同时更新内容覆盖映射。仅引用提供的原文。"
+            ),
+            "revise_patch": (
+                "根据完整原文、草稿和修改要求，返回局部修改包 DraftPatch，禁止返回整份草稿。"
+                "只返回发生变化的对象；目标以完整 Objective 为最小替换单位，"
+                "题干、答案、评分须一致。points 仅新增或修改知识点标题；"
+                "objectives 指定所属 point_key，可新增、替换或移动目标。"
+                "其余内容清单和误解按 key/code 新增或替换；删除必须在对应 delete_* 列表显式列出。"
+                "删除知识点前须明确移动或删除其中全部目标。同步修正相关前置、内容映射与误解关联。"
+                "notes=null 表示保持，列表表示整体替换，[] 表示清空；未变更的对象不返回。"
+                "禁止随意排除或删除必要内容来消除审核问题；仅引用提供的原文。"
             ),
             "task": (
                 "执行指定教学动作和目标，原样返回objective_key和action。DIAGNOSE只提问题；"
@@ -127,6 +139,23 @@ class ModelOperations:
             },
             Draft,
         )
+
+    def revise_patch(self, draft, chunks, instruction):
+        payload = {
+            "draft": draft.model_dump(),
+            "chunks": [c.model_dump() for c in chunks],
+            "instruction": instruction,
+        }
+        self.last_revision_metrics = None
+        started = time.monotonic()
+        patch = self.call("revise_patch", payload, DraftPatch)
+        self.last_revision_metrics = {
+            "input_data_chars": len(json.dumps(payload, ensure_ascii=False)),
+            "patch_chars": len(patch.model_dump_json()),
+            "draft_chars": len(draft.model_dump_json()),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+        return patch
 
     def task(self, objective, chunks, action, history, misconceptions):
         return self.call(

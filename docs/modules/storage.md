@@ -2,7 +2,7 @@
 
 ## 当前实现基线
 
-本次后端集成使用 `storage.py` 的 schema 2。当前表为 `books/versions/draft_batches/sessions/attempts/assessments/events/backend_bindings`，复杂对象保存为 JSON，掌握状态按证据重放计算。下文第 1–5 节的 UnitOfWork、规范化表和索引是更完整的目标结构，不表示都已建表；第 6–7 节描述当前配置和迁移。
+当前 `storage.py` 使用 schema 3，表为 `books/versions/draft_batches/sessions/attempts/assessments/events/backend_bindings/preparations`，复杂对象保存为 JSON，掌握状态按证据重放计算。preparations 按 version_id 保存准备任务 ID、阶段、对应修订、已用轮数、修改包、候选、错误、调用计数及修改摘要。局部修改包返回后先保存为 merge 阶段，再合并和校验；不改变表结构，兼容旧任务中的完整候选。正式修订及复审结果与对应任务阶段在同一事务保存。独立修订的 revision_patch_received/processed 事件支持同版本同指令的中断恢复。下文第 1–5 节的 UnitOfWork、规范化表和索引是更完整的目标结构，不表示都已建表；第 6–7 节描述当前配置和迁移。
 
 新增表：
 
@@ -20,7 +20,7 @@ CREATE TABLE backend_bindings(
 
 ## 1. 边界和目录
 
-目标存储层包含仓储、UnitOfWork、文件仓储和迁移，不决定教学动作或评分。以下为目标目录，当前尚无自动 backups/logs 管理；新原型 schema 1 → 2 的迁移不涉及已删除的旧系统数据库：
+目标存储层包含仓储、UnitOfWork、文件仓储和迁移，不决定教学动作或评分。以下为目标目录，当前尚无自动 backups/logs 管理；新原型 schema 1/2 → 3 的迁移不涉及已删除的旧系统数据库：
 
 ```text
 data-v2/
@@ -161,7 +161,7 @@ Codex 只检查已有登录，不负责账户管理；API 密钥、代理、Code
 
 ## 7. 迁移、备份与测试
 
-首次写命令取得目录锁后初始化数据库。当前接受 user_version 0、1、2；空库先创建基础表，再增加 backend_bindings 并设置 PRAGMA user_version=2。版本 1 升级保留已有教材、会话和证据；重复初始化版本 2 不重复建表。其他版本拒绝，不自动降级。只读命令不迁移；空目录只读查询提示暂无数据。
+首次写命令取得目录锁后初始化数据库。当前接受 user_version 0、1、2、3；空库先创建基础表，再增加 backend_bindings、preparations 并设置 PRAGMA user_version=3。版本 1/2 升级保留已有教材、会话和证据；重复初始化版本 3 不重复建表。其他版本拒绝，不自动降级。只读命令不迁移；空目录只读查询提示暂无数据。
 
 旧草稿/会话没有绑定时，在首次需要后端时按当时选择建立快照，不根据旧 model 文本猜测服务地址或账户。需要明确来源时应显式指定后端。当前没有 schema_migrations/checksum 机制，也不自动生成升级前备份；这些仍为后续目标。后续备份应使用 SQLite backup API，避免复制活动 WAL 下不完整的单个 db 文件。
 

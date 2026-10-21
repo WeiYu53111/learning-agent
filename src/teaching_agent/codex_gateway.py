@@ -57,8 +57,14 @@ class CodexGateway(ModelOperations):
         schema = strict_schema(contract.model_json_schema())
         body = json.dumps(payload, ensure_ascii=False)
         schema_text = json.dumps(schema, ensure_ascii=False)
-        if len(body) + len(schema_text) > self.spec.input_chars:
-            raise AppError("本次输入过长，请缩小教材范围或调整后端 input_chars。")
+        input_chars = len(body) + len(schema_text)
+        if input_chars > self.spec.input_chars:
+            raise AppError(
+                f"本次 {operation} 输入过长：请求数据及输出结构共 {input_chars} 字符，"
+                f"超过 input_chars={self.spec.input_chars}。"
+                "请调整 teach.toml（或 --config 指定文件）中对应后端的 input_chars，"
+                "并用 --backend 显式选择该后端以应用新配置；或缩小教材范围。"
+            )
         messages = self.messages(operation, body, schema_text)
         prompt = (
             messages[0]["content"]

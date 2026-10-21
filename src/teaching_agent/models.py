@@ -111,6 +111,28 @@ class Draft(Contract):
         return {o.key: o for p in self.points for o in p.objectives}
 
 
+class PointChange(Contract):
+    key: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    title: str = Field(min_length=1)
+
+
+class ObjectiveChange(Contract):
+    point_key: str
+    objective: Objective
+
+
+class DraftPatch(Contract):
+    points: list[PointChange] = Field(default_factory=list)
+    delete_points: list[str] = Field(default_factory=list)
+    objectives: list[ObjectiveChange] = Field(default_factory=list)
+    delete_objectives: list[str] = Field(default_factory=list)
+    content_items: list[ContentItem] = Field(default_factory=list)
+    delete_content_items: list[str] = Field(default_factory=list)
+    misconceptions: list[Misconception] = Field(default_factory=list)
+    delete_misconceptions: list[str] = Field(default_factory=list)
+    notes: list[str] | None = None
+
+
 class Issue(Contract):
     description: str = Field(min_length=1)
     severity: Literal["error", "warning"]

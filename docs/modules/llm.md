@@ -9,6 +9,7 @@ model: str
 extract(chunks) -> Draft
 audit(draft, chunks) -> Audit
 revise(draft, chunks, instruction) -> Draft
+revise_patch(draft, chunks, instruction) -> DraftPatch
 task(objective, chunks, action, history, misconceptions) -> Task
 grade(question, answer, chunks, misconceptions) -> Assessment
 ```
@@ -16,6 +17,8 @@ grade(question, answer, chunks, misconceptions) -> Assessment
 `BackendRegistry.build(BackendSpec)` 创建 `Gateway`（HTTP）、`CodexGateway` 或 `DemoGateway`。HTTP/Codex 继承 `ModelOperations`，共用任务提示与输入封装，分别实现 `call(operation,payload,contract)`。离线演示按固定教材返回候选，应用禁止它处理普通 PDF。选择规则与绑定属于应用层，网关不负责回退或更换服务。
 
 当前直接返回 Pydantic 候选，不提供通用 `ModelResult` 或完整用量遥测。`model` 是来源标签；应用加上后端名称与类型。配置的模型名不保证是服务解析后的精确版本；Codex 未指定模型时明确记录 `codex-default (resolved model unknown)`。统一请求 ID、实际模型、耗时与用量封装属于后续扩展。
+
+自动准备和独立修订使用 `revise_patch`，完整输入、局部输出；`revise` 仅用于提取批次校正。DraftPatch 支持知识点标题、带 point_key 的完整目标、内容清单、误解条目的新增替换和显式删除，以及 notes 的整体替换（null 不改，[] 清空）。应用按 ID 合并，拒绝重复操作、删除不存在对象、隐式级联删除和无效所属关系，再检查完整草稿。`last_revision_metrics` 记录输入数据字符、修改包及原草稿字符、调用耗时；它不等同于 token 用量或完整请求大小。
 
 ## 2. 输入和上下文
 

@@ -12,8 +12,10 @@ CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当�
 |---|---|
 | `teach import PATH` | 只在本地解析和保存 PDF，相同文件复用，不调用模型 |
 | `teach books` / `teach drafts` | 分别列出教材和内容版本 |
+| `teach delete-book BOOK` | 永久删除无关联版本的教材及 PDF 副本；有关联版本时拒绝并列出 ID，保留原始导入文件 |
 | `teach outline BOOK` | 查看章节 ID 和物理页范围 |
-| `teach draft BOOK --section SECTION [--pages START:END]` | 生成草稿；失败用 `draft --resume VERSION` |
+| `teach draft BOOK --section SECTION [--pages START:END]` | 自动提取、审核、最多两轮修订及复审；失败用 `draft --resume VERSION`，`--extract-only` 仅提取 |
+| `teach prepare VERSION [--retry]` | 准备已有草稿或恢复任务；--retry 显式开启新一轮任务 |
 | `teach delete VERSION` | 永久删除未发布草稿及其提取批次、事件和后端绑定；拒绝删除已发布版本 |
 | `teach inspect VERSION` | 展示草稿质量问题、引用与待确认项 |
 | `teach audit VERSION` / `teach review VERSION` | 模型审核 / 人工交互审核校正 |
@@ -24,9 +26,13 @@ CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当�
 | `teach attempts SESSION` | 原始作答、最新评分修订及评分后端/模型 |
 | `teach reassess ATTEMPT --reason TEXT` | 显式复核原作答，创建新评估修订；不要求用户再答同题 |
 
-当前 import 不生成草稿，publish 不提供 `--yes`；发布门禁是当前修订经过 audit 和人工 approve。完整命令含 export/apply/revise/resolve/clone/answer/next，见[命令清单](../prototype.md#6-当前命令清单)。`teach ask` 与 `/ask` 尚未实现。
+当前 import 不生成草稿，publish 不提供 `--yes`；发布门禁是当前修订通过程序校验、经过 audit 且无 error，再经人工确认。resolve 备注不能放行 error。完整命令含 export/apply/revise/resolve/clone/answer/next，见[命令清单](../prototype.md#6-当前命令清单)。`teach ask` 与 `/ask` 尚未实现。
+
+自动准备完成后，交互终端当场展示学习范围、实际修改及剩余建议并询问是否开始，默认否。确认后发布并进入教学；拒绝或 EOF 保留结果。非交互执行不发布。`start VERSION` 可对准备完成的草稿重新请求确认；对已发布版本保持原行为。
 
 全局参数 `--config PATH`、`--backend NAME`、`--env-file PATH`、`--data-dir PATH` 放在子命令之前。CLI 仅把配置路径和显式选择传给 BackendRegistry；绑定优先级由应用执行。start/resume 展示所选后端、类型和配置模型，默认值明确显示“后端默认”。
+
+`draft`、`prepare`、独立 `audit`/`revise` 及 review 内的审核将阶段进度实时输出到 stderr：批次及 PDF 页范围、后端/模型、缓存复用、提取、审核、修订轮数、等待局部修订、收到修改包、合并、完整校验、复审和保存。每 15 秒输出当前阶段及总耗时，表示客户端仍在等待，不代表模型生成百分比。修订还显示输入数据、修改包、完整草稿字符数和调用耗时；这些不是 token 数。完成、异常或中断时停止计时提示，非 TTY 同样使用普通文本行。
 
 `drafts` 面向人工选择，按创建时间从新到旧，以教材文件名、章节标题和实际选定 PDF 页范围为首要信息。状态使用中文，区分未完成提取、待模型审核、待人工审核、已确认待发布和已发布；审核摘要显示尚未处理的 error 数及 warning 数。每条保留完整版本 ID，并给出下一步可复制命令，演示教材单独标注。列表不调用模型，也不改变审核或发布状态。
 

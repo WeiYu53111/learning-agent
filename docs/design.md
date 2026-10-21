@@ -102,7 +102,7 @@ Ctrl+C 暂停，EOF 保存后退出。模型生成未提交时中断，不推进
 
 ## 6. 配置与数据
 
-新数据默认使用 `data-v2/`，不得自动读取或迁移旧 `data/learning_agent.db`。当前 SQLite 保存教材、版本、提取批次、会话、作答、评分修订和事件，掌握投影按最新证据重放计算。已支持新原型 schema 1 → 2 的升级，新增 `backend_bindings(owner_id,name,spec)`；这不等于迁移已删除的旧系统数据库。
+新数据默认使用 `data-v2/`，不得自动读取或迁移旧 `data/learning_agent.db`。当前 SQLite 保存教材、版本、提取批次、会话、作答、评分修订和事件，掌握投影按最新证据重放计算。已支持新原型 schema 1/2 → 3 的升级，新增 `backend_bindings(owner_id,name,spec)`；这不等于迁移已删除的旧系统数据库。
 
 后端配置使用 `teach.toml`，或通过 `--config PATH` 指定。新绑定优先采用 `--backend NAME`，其次 `active_backend`；没有选择时兼容原有 `TEACH_*` HTTP 环境变量。内置演示教材在未显式选择时使用离线后端。已绑定草稿或会话默认采用保存的配置快照，显式选择才切换；修改默认配置不暗中改变旧会话。
 

@@ -48,7 +48,7 @@ def test_coverage_references_and_cycles(app, draft_id):
     assert any("循环" in e for e in errors)
 
 
-def test_audit_errors_require_recorded_disposition(app, draft_id):
+def test_audit_errors_cannot_be_waived_by_recorded_disposition(app, draft_id):
     app.injected_gateway.audit = lambda draft, chunks: Audit(
         issues=[Issue(description="请检查目标粒度", severity="error")]
     )
@@ -56,7 +56,13 @@ def test_audit_errors_require_recorded_disposition(app, draft_id):
     with pytest.raises(AppError, match="尚未处理"):
         app.approve(draft_id)
     app.resolve_issue(draft_id, 0, "已对照原文：该目标只包含一个可独立评估行为。")
-    app.approve(draft_id)
+    with pytest.raises(AppError, match="尚未处理"):
+        app.approve(draft_id)
+    # Even an approval written by the previous version must not bypass the new gate.
+    with app.store.connect() as conn:
+        conn.execute("UPDATE versions SET approved_revision=revision WHERE id=?", (draft_id,))
+    with pytest.raises(AppError, match="error"):
+        app.publish(draft_id)
     decisions = json.loads(app.version(draft_id)[0]["decisions"])
     assert "原文" in decisions["0"]
 

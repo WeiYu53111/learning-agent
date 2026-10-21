@@ -18,6 +18,7 @@ from .backends import BackendRegistry
 from .demo import make_pdf
 from .knowledge import quality_report
 from .models import AppError, Audit, Draft
+from .progress import DraftProgress
 from .storage import Store, writer_lock
 
 
@@ -32,13 +33,19 @@ def parser():
     command = sub.add_parser("import", help="只解析并保存 PDF，不调用模型")
     command.add_argument("path", type=Path)
     sub.add_parser("books")
+    command = sub.add_parser("delete-book", help="永久删除没有关联版本的教材及 PDF 副本")
+    command.add_argument("book", metavar="BOOK")
     command = sub.add_parser("outline")
     command.add_argument("book")
-    command = sub.add_parser("draft", help="选择章节生成待审核知识草稿")
+    command = sub.add_parser("draft", help="选择章节并自动提取、审核和修订学习内容")
     command.add_argument("book", nargs="?")
     command.add_argument("--section", default="s1")
     command.add_argument("--pages", help="只处理章节中的物理页范围，例如 1:5")
     command.add_argument("--resume", metavar="VERSION")
+    command.add_argument("--extract-only", action="store_true", help="仅提取，不自动审核修订")
+    command = sub.add_parser("prepare", help="准备已有草稿或恢复审核修订流程")
+    command.add_argument("version")
+    command.add_argument("--retry", action="store_true", help="开始新任务，重新给予两轮修订额度")
     sub.add_parser("drafts")
     command = sub.add_parser("delete", help="永久删除未发布草稿及其关联数据")
     command.add_argument("version", metavar="VERSION")
@@ -96,7 +103,7 @@ def list_drafts(app):
         pages = page_range.replace(":", "–") or f"{section.start_page}–{section.end_page}"
         status = "草稿"
         detail = "尚未执行模型审核"
-        command = f"audit {row['id']}"
+        command = f"prepare {row['id']}"
         if row["status"] == "published":
             status, detail = "已发布", "可以开始学习"
             command = f"start {row['id']}"
@@ -108,14 +115,29 @@ def list_drafts(app):
             command = f"publish {row['id']}"
         elif row["reviewed_revision"] == row["revision"] and row["audit"]:
             audit = Audit.model_validate_json(row["audit"])
-            decisions = json.loads(row["decisions"])
-            unresolved = sum(
-                issue.severity == "error" and str(i) not in decisions
-                for i, issue in enumerate(audit.issues)
-            )
+            unresolved = sum(issue.severity == "error" for issue in audit.issues)
             warnings = sum(issue.severity == "warning" for issue in audit.issues)
-            detail = f"待人工审核：{unresolved} 项错误待处理，{warnings} 项建议"
-            command = f"review {row['id']}"
+            detail = f"模型审核：{unresolved} 项错误待处理，{warnings} 项建议"
+        preparation = app.preparation(row["id"])
+        if preparation and preparation["revision"] == row["revision"] and row["status"] == "draft":
+            phase_name = {
+                "extract": "提取",
+                "check": "程序校验",
+                "audit": "审核",
+                "evaluate": "整理审核结果",
+                "revise": "修订",
+                "validate": "候选校验",
+                "merge": "合并局部修改",
+                "ready": "待确认",
+                "blocked": "准备未完成",
+            }.get(preparation["phase"], preparation["phase"])
+            detail = f"准备阶段：{phase_name}，已用 {preparation['rounds']}/2 轮修订"
+            command = f"prepare {row['id']}"
+            if preparation["phase"] == "ready":
+                detail = "准备完成，待确认学习范围"
+                command = f"start {row['id']}"
+            elif preparation["phase"] == "blocked":
+                command += " --retry"
         print(f"\n教材：{book.filename}" + ("（离线演示教材）" if book.demo else ""))
         print(f"章节：{section.title} · PDF 第 {pages} 页")
         print(f"状态：{status} · 第 {row['revision']} 次修订 · {detail}")
@@ -170,7 +192,7 @@ def inspect(app, identifier):
         for index, issue in enumerate(audit.issues, 1):
             print(f"  {index}. [{issue.severity}] {issue.description}")
             if str(index - 1) in decisions:
-                print(f"     人工处理：{decisions[str(index - 1)]}")
+                print(f"     人工备注（不放行 error）：{decisions[str(index - 1)]}")
     else:
         print("尚未完成当前修订的模型审核。修改后须重新审核、确认。")
 
@@ -251,7 +273,8 @@ def review_loop(app, identifier):
                 app.save_draft(identifier, Draft.model_validate(draft.model_dump()), line)
                 print("已保存草稿修订；原审核和确认已失效。")
             elif command == "audit":
-                app.audit(identifier)
+                with DraftProgress() as progress:
+                    app.audit(identifier, progress=progress)
                 inspect(app, identifier)
             elif command == "resolve" and len(parts) >= 3:
                 app.resolve_issue(identifier, int(parts[1]) - 1, " ".join(parts[2:]))
@@ -328,6 +351,80 @@ def chat(app, identifier, state):
         print(f"\n已暂停。恢复：teach resume {identifier}")
 
 
+def preparation_summary(app, identifier):
+    row, book, chunks = app.version(identifier)
+    state = app.preparation(identifier)
+    if not state or state["revision"] != row["revision"]:
+        raise AppError(f"请先准备当前草稿：teach prepare {identifier}")
+    print(f"\n学习范围：{book.filename} · PDF 页 {chunks[0].page}–{chunks[-1].page}")
+    if row["data"] != "{}":
+        draft = Draft.model_validate_json(row["data"])
+        for point in draft.points:
+            print(f"  {point.title}")
+            for objective in point.objectives:
+                if not objective.excluded_reason:
+                    print(f"    · {objective.description}")
+    print(f"自动修订：{state['rounds']}/2 轮")
+    for change in state["changes"]:
+        print(
+            f"  第 {change['round']} 轮：新增 {change['added']}、"
+            f"移除/合并 {change['removed']}、修改 {change['updated']} 个目标；"
+            f"备注{'有更新' if change['notes_changed'] else '未变'}"
+        )
+        for name, label in (
+            ("points", "知识点标题"),
+            ("content_items", "内容清单"),
+            ("misconceptions", "误解条目"),
+        ):
+            counts = change.get("objects", {}).get(name)
+            if counts and any(counts.values()):
+                print(
+                    f"    {label}：新增 {counts['added']}、删除 {counts['removed']}、"
+                    f"修改 {counts['updated']}"
+                )
+        moved = change.get("objects", {}).get("moved_objectives", 0)
+        if moved:
+            print(f"    移动目标：{moved}")
+    for error in state["errors"]:
+        print(f"[程序错误] {error}")
+    for issue in state["issues"]:
+        print(f"[{issue['severity']}] {issue['description']}")
+    print(f"详情：teach inspect {identifier}")
+    if state["phase"] != "ready":
+        suffix = " --retry" if state["phase"] == "blocked" else ""
+        print(f"准备未完成。继续：teach prepare {identifier}{suffix}")
+        return False
+    print("内容满足当前检查条件。确认表示接受学习范围和剩余提示，不要求你专业校对。")
+    return True
+
+
+def confirm_prepared(app, identifier):
+    if not preparation_summary(app, identifier):
+        return False
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(f"待确认。请在交互终端运行：teach start {identifier}")
+        return False
+    try:
+        accepted = input("接受以上学习范围和剩余提示，开始学习吗？[y/N] ").strip().lower()
+    except EOFError:
+        accepted = ""
+    if accepted not in {"y", "yes", "是"}:
+        print(f"已保留，稍后开始：teach start {identifier}")
+        return False
+    app.approve(identifier)
+    app.publish(identifier)
+    return True
+
+
+def run_preparation(app, identifier, retry=False):
+    with DraftProgress() as progress:
+        state = app.prepare(identifier, retry=retry, progress=progress)
+    if confirm_prepared(app, identifier):
+        dispatch(app, parser().parse_args(["start", identifier]))
+    elif state["phase"] == "blocked":
+        raise AppError(f"准备未完成：teach prepare {identifier} --retry")
+
+
 def dispatch(app, args):
     command = args.command
     if command == "demo":
@@ -351,6 +448,9 @@ def dispatch(app, args):
         for row in app.store.rows("SELECT id,data FROM books"):
             data = json.loads(row["data"])
             print(f"{row['id']} | {data['filename']} | {data['page_count']} 页")
+    elif command == "delete-book":
+        app.delete_book(args.book)
+        print(f"已删除教材：{args.book}")
     elif command == "outline":
         for section in app.book(args.book).sections:
             print(f"{section.id} p.{section.start_page}–{section.end_page} {section.title}")
@@ -360,9 +460,15 @@ def dispatch(app, args):
         section = args.section + ("@" + args.pages if args.pages else "")
         identifier = args.resume or app.create_draft(args.book, section)
         print(f"草稿：{identifier}；失败后可用 draft --resume 继续。", flush=True)
-        app.build_draft(identifier)
-        inspect(app, identifier)
-        print(f"下一步：teach audit {identifier}，然后 teach review {identifier}")
+        if args.extract_only:
+            with DraftProgress() as progress:
+                app.build_draft(identifier, progress=progress)
+            inspect(app, identifier)
+            print(f"下一步：teach prepare {identifier}")
+        else:
+            run_preparation(app, identifier)
+    elif command == "prepare":
+        run_preparation(app, args.version, retry=args.retry)
     elif command == "drafts":
         list_drafts(app)
     elif command == "delete":
@@ -377,7 +483,8 @@ def dispatch(app, args):
     elif command == "review":
         review_loop(app, args.version)
     elif command == "audit":
-        app.audit(args.version)
+        with DraftProgress() as progress:
+            app.audit(args.version, progress=progress)
         inspect(app, args.version)
     elif command == "approve":
         app.approve(args.version)
@@ -400,16 +507,20 @@ def dispatch(app, args):
         app.save_draft(args.version, draft, "人工JSON编辑")
         inspect(app, args.version)
     elif command == "revise":
-        row, book, chunks = app.version(args.version)
-        if row["status"] != "draft":
-            raise AppError("请先 clone 已发布版本。")
-        draft = app.gateway(book, args.version).revise(
-            Draft.model_validate_json(row["data"]), chunks, args.instruction
-        )
-        app.save_draft(args.version, draft, args.instruction)
+        with DraftProgress() as progress:
+            app.revise(args.version, args.instruction, progress=progress)
         inspect(app, args.version)
     elif command in {"start", "resume"}:
         if command == "start":
+            if app.store.get("versions", args.version)["status"] == "draft":
+                if args.due or args.point:
+                    raise AppError("草稿首次确认请使用 start VERSION，不附加 --due 或 --point。")
+                preparation = app.preparation(args.version)
+                if not preparation or preparation["phase"] != "ready":
+                    suffix = " --retry" if preparation and preparation["phase"] == "blocked" else ""
+                    raise AppError(f"请先完成准备：teach prepare {args.version}{suffix}")
+                if not confirm_prepared(app, args.version):
+                    return
             identifier = app.start(args.version, args.point, args.due)
             print(f"会话：{identifier}", flush=True)
             state = app.advance(identifier)
