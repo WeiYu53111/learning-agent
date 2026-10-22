@@ -205,6 +205,8 @@ def test_v2_migration_preserves_records(app, draft_id):
     before = app.version(draft_id)[0]
     with app.store.connect() as conn:
         conn.execute("DROP TABLE preparations")
+        conn.execute("DROP TABLE answer_rounds")
+        conn.execute("DROP TABLE attempt_context")
         conn.execute("PRAGMA user_version=2")
     app.store.initialize()
     app.store.initialize()

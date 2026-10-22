@@ -45,6 +45,11 @@ def make_pdf(path):
 
 
 class DemoGateway:
+    def book_operation(self, operation, payload, contract):
+        from .book_demo import book_operation
+
+        return book_operation(operation, payload, contract)
+
     model = "offline-demo-keyword-grader"
 
     def extract(self, chunks):
@@ -146,4 +151,32 @@ class DemoGateway:
             items=items,
             feedback="离线演示评分：仅检查关键词，请使用真实模型验证语义评分。",
             correction=question.reference_answer,
+        )
+
+
+class EvidenceDemoGateway(DemoGateway):
+    """Offline v2 flow demonstration; keyword matching is not semantic evaluation."""
+
+    def task_evidence(self, objective, chunks, action, history, misconceptions):
+        return self.task(objective, chunks, action, history, misconceptions)
+
+    def grade_evidence(self, question, answer, chunks, misconceptions, context):
+        from .models import EvidenceAssessment, EvidenceItem
+
+        items = [
+            EvidenceItem(
+                rubric_key=r.key,
+                verdict="met" if r.description in answer else "insufficient",
+                answer_quotes=[r.description] if r.description in answer else [],
+                reason="离线演示仅匹配关键词；缺失关键词不代表明确知识错误。",
+            )
+            for r in question.rubric
+        ]
+        unclear = any(i.verdict == "insufficient" for i in items)
+        return EvidenceAssessment(
+            status="valid",
+            items=items,
+            feedback="离线演示：请使用真实模型验证语义判断。",
+            followup="请进一步说明你的判断依据。" if unclear else "",
+            correction="" if unclear else question.reference_answer,
         )

@@ -18,8 +18,8 @@ from .application import Application
 from .backends import BackendRegistry
 from .demo import make_pdf
 from .knowledge import quality_report
+from .learner import outcome, score
 from .models import AppError, Assessment, Audit, Draft, Question
-from .learner import score
 from .progress import DraftProgress
 from .storage import Store, writer_lock
 
@@ -34,6 +34,24 @@ def parser():
     sub.add_parser("demo", help="创建明确标注的离线演示教材与草稿")
     command = sub.add_parser("import", help="只解析并保存 PDF，不调用模型")
     command.add_argument("path", type=Path)
+    command = sub.add_parser("index", help="梳理全书知识结构，可恢复")
+    command.add_argument("book")
+    command.add_argument("--new", action="store_true", help="创建新的知识结构版本")
+    command = sub.add_parser("learn", help="按章两阶段准备并开始学习")
+    command.add_argument("book")
+    command.add_argument("--section", required=True)
+    command.add_argument("--new", action="store_true")
+    command = sub.add_parser("ask", help="仅依据当前教材原文回答")
+    command.add_argument("book")
+    command.add_argument("--text", required=True)
+    command = sub.add_parser("mastery", help="标记或撤销用户自报掌握")
+    command.add_argument("book")
+    target = command.add_mutually_exclusive_group(required=True)
+    target.add_argument("--section")
+    target.add_argument("--point")
+    action = command.add_mutually_exclusive_group(required=True)
+    action.add_argument("--mark", action="store_true")
+    action.add_argument("--clear", action="store_true")
     sub.add_parser("books")
     command = sub.add_parser("delete-book", help="永久删除没有关联版本的教材及 PDF 副本")
     command.add_argument("book", metavar="BOOK")
@@ -200,8 +218,11 @@ def inspect(app, identifier):
 
 
 MASTERY_LABELS = {
-    "provisionally_mastered": "已掌握", "review_due": "待复习", "learning": "学习中",
-    "needs_remediation": "待补练", "unknown": "未验证",
+    "provisionally_mastered": "已掌握",
+    "review_due": "待复习",
+    "learning": "学习中",
+    "needs_remediation": "待补练",
+    "unknown": "未验证",
 }
 
 
@@ -209,6 +230,19 @@ def print_progress(app, identifier):
     row, _, _ = app.version(identifier)
     draft = Draft.model_validate_json(row["data"])
     progress = app.progress(identifier)
+    self_reported = set()
+    if app.library.available():
+        links = app.store.rows("SELECT * FROM lesson_links WHERE version_id=?", (identifier,))
+        if links:
+            index = app.store.rows(
+                "SELECT * FROM book_indexes WHERE id=?", (links[0]["index_id"],)
+            )[0]
+            marked = app.library.marks(row["book_id"], index)
+            self_reported = {
+                p["draft_point"]
+                for p in json.loads(links[0]["data"]).get("point_map", [])
+                if set(p["knowledge_keys"]) <= marked
+            }
     labels = MASTERY_LABELS
     details = app.progress_details(identifier)
     included = [obj for obj in draft.objectives().values() if not obj.excluded_reason]
@@ -222,6 +256,13 @@ def print_progress(app, identifier):
     misconceptions = {m.code: m.description for m in draft.misconceptions}
     for index, point in enumerate(draft.points, 1):
         print(f"\n{index}. {point.title}")
+        if point.key in self_reported:
+            weak = any(progress[o.key]["status"] == "needs_remediation" for o in point.objectives)
+            print(
+                "   自报掌握，但练习显示需复习。"
+                if weak
+                else "   用户自报已掌握（练习状态独立记录）。"
+            )
         for obj in point.objectives:
             if obj.excluded_reason:
                 print(f"   [已排除] {obj.description}")
@@ -231,8 +272,7 @@ def print_progress(app, identifier):
             trend = "未验证" if value["score"] is None else f"{value['score']:.3f}"
             print(f"   [{labels[value['status']]}] {obj.description}")
             detail = (
-                f"   编号：{obj.key} · 独立通过 {value['independent_passes']}/2"
-                f" · 趋势分 {trend}"
+                f"   编号：{obj.key} · 独立通过 {value['independent_passes']}/2 · 趋势分 {trend}"
             )
             if value["due"]:
                 detail += f" · 复习时间 {value['due']}"
@@ -240,7 +280,8 @@ def print_progress(app, identifier):
             history = details.get(obj.key)
             if history:
                 print(
-                    f"   已作答 {history['attempts']} 次 · 评分待复核 {len(history['needs_review'])} 次"
+                    f"   已作答 {history['attempts']} 次"
+                    f" · 评分待复核 {len(history['needs_review'])} 次"
                     f" · 题目无效 {history['invalid_question']} 次 · 待评分 {history['pending']} 次"
                 )
                 if value["status"] == "unknown":
@@ -252,23 +293,39 @@ def print_progress(app, identifier):
 
 
 def print_session(state, view=None):
-    lifecycle = {"active": "学习中", "paused": "已暂停", "completed": "已完成",
-                 "ended_with_gaps": "本轮结束，仍有待学内容"}
-    phases = {"planning": "准备下一题", "awaiting_answer": "等待回答",
-              "evaluating": "正在评分", "feedback_ready": "查看反馈"}
-    print(f"\n[{lifecycle.get(state['lifecycle'], state['lifecycle'])} / "
-          f"{phases.get(state['phase'], state['phase'])}]")
+    lifecycle = {
+        "active": "学习中",
+        "paused": "已暂停",
+        "completed": "已完成",
+        "ended_with_gaps": "本轮结束，仍有待学内容",
+    }
+    phases = {
+        "planning": "准备下一题",
+        "awaiting_answer": "等待回答",
+        "evaluating": "正在评分",
+        "feedback_ready": "查看反馈",
+        "awaiting_clarification": "等待补充回答",
+    }
+    print(
+        f"\n[{lifecycle.get(state['lifecycle'], state['lifecycle'])} / "
+        f"{phases.get(state['phase'], state['phase'])}]"
+    )
     if view:
         print(f"知识点：{view['title']}\n学习目标：{view['description']}")
         print(f"编号：{view['key']} · 当前状态：{MASTERY_LABELS[view['mastery']['status']]}")
     task = state.get("task")
     if task:
-        actions = {"DIAGNOSE": "首次诊断", "REMEDIATE": "针对性补练", "REASSESS": "再次验证",
-                   "REVIEW": "到期复习", "EXPLAIN": "目标讲解"}
+        actions = {
+            "DIAGNOSE": "首次诊断",
+            "REMEDIATE": "针对性补练",
+            "REASSESS": "再次验证",
+            "REVIEW": "到期复习",
+            "EXPLAIN": "目标讲解",
+        }
         print("本题教学动作：" + actions.get(task["action"], task["action"]))
         if task["explanation"]:
             print("讲解：" + task["explanation"])
-        if state["phase"] == "awaiting_answer" and task.get("question"):
+        if state["phase"] in {"awaiting_answer", "awaiting_clarification"} and task.get("question"):
             saved = answer_state(state)
             index = len(saved["answers"])
             if saved["context"]:
@@ -281,18 +338,37 @@ def print_session(state, view=None):
     if state.get("feedback") and state["phase"] == "feedback_ready":
         attempt = view.get("attempt") if view else None
         feedback = attempt["assessment"] if attempt else state["feedback"]
-        statuses = {"valid": "有效评分", "needs_review": "评分待复核", "invalid_question": "题目无效"}
+        statuses = {
+            "valid": "有效评分",
+            "needs_review": "评分待复核",
+            "invalid_question": "题目无效",
+        }
         print(f"评估状态：{statuses[feedback['status']]}\n{feedback['feedback']}")
         if feedback["status"] == "valid" and (attempt or (task and task.get("question"))):
             question = Question.model_validate(attempt["question"] if attempt else task["question"])
             assessment = Assessment.model_validate(feedback)
             value, passed = score(assessment, question)
-            print(f"本题 {value * 100:g} 分；{'已达标' if passed else '尚未达标'}。")
+            if assessment.rule_version == 2:
+                labels = {
+                    "passed": "已满足核心要求",
+                    "incorrect": "核心要求存在明确错误",
+                    "insufficient": "证据不足，不扣减独立达标次数",
+                }
+                print("本题：" + labels[outcome(assessment, question)] + "。")
+            else:
+                print(f"本题 {value * 100:g} 分；{'已达标' if passed else '尚未达标'}。")
             items = {item.rubric_key: item for item in assessment.items}
             for rubric in question.rubric:
                 item = items[rubric.key]
-                if item.credit < 1:
-                    print(f"{'关键项待补全' if rubric.critical else '待完善项'}：{rubric.description}")
+                if assessment.rule_version == 2:
+                    label = {"met": "已满足", "incorrect": "明确错误", "insufficient": "证据不足"}[
+                        item.verdict
+                    ]
+                    print(f"{rubric.description}：{label}；{item.reason}")
+                elif item.credit < 1:
+                    print(
+                        f"{'关键项待补全' if rubric.critical else '待完善项'}：{rubric.description}"
+                    )
                     print(f"  得分比例 {item.credit:g}；原因：{item.reason}")
             if attempt and attempt["assisted"]:
                 print("本题使用过提示，属于辅助作答，不计入独立达标次数。")
@@ -306,9 +382,16 @@ def print_session(state, view=None):
         if view:
             mastery = view["mastery"]
             count = mastery["independent_passes"]
-            print(f"当前独立达标 {count}/2；单题须至少 80 分且关键项全对。")
+            if mastery.get("rule_version", 1) == 2:
+                print(f"当前有效独立达标 {count}/2；核心要求全部满足才通过。")
+                print("明确独立失败减一次，最低为零；证据不足不扣减。")
+                for gap in mastery.get("gaps", []):
+                    print("待补练缺口：" + gap["requirement"])
+            else:
+                print(f"当前独立达标 {count}/2；单题须至少 80 分且关键项全对。")
             if count < 2:
-                print(f"还需 {2 - count} 次不同场景的独立达标；独立失败后重新累计。")
+                suffix = "" if mastery.get("rule_version", 1) == 2 else "；独立失败后重新累计"
+                print(f"还需 {2 - count} 次不同场景的独立达标{suffix}。")
             if view["misconceptions"]:
                 print("仍需解除已确认的关键误解：" + "；".join(view["misconceptions"]))
             if mastery["status"] == "provisionally_mastered":
@@ -405,9 +488,21 @@ def chat(app, identifier, state):
                 if answer == "/help":
                     print("回车换行，/end 提交小问，/cancel 清空当前输入；")
                     print(
-                        "/hint /explain /skip /progress /why /continue /answer /pause；"
+                        "/hint /explain /skip /progress /why /continue /answer /pause /ask 问题；"
                         "// 输入字面斜线。"
                     )
+                elif answer == "/ask" or answer.startswith("/ask "):
+                    question = answer[4:].strip()
+                    try:
+                        book = app.version(app.session(identifier)[0]["version_id"])[1]
+                        with DraftProgress() as progress:
+                            record = app.library.ask(
+                                book.id, question, progress, session_id=identifier
+                            )
+                        print_book_answer(record)
+                        print("已回到原题，原答案输入已保留。")
+                    except (AppError, ValidationError) as exc:
+                        print(f"提问失败，原题及答案输入已保留：{safe_error(exc)}")
                 elif answer == "/why":
                     print(state["why"])
                 elif answer == "/progress":
@@ -530,6 +625,47 @@ def run_preparation(app, identifier, retry=False):
         raise AppError(f"准备未完成：teach prepare {identifier} --retry")
 
 
+def print_book_answer(record):
+    answer = record["answer"]
+    if not answer["sufficient"]:
+        print("依据不足：" + answer["limitation"])
+        return
+    pages = {c["id"]: c["page"] for c in record["chunks"]}
+    for part in answer["parts"]:
+        print(part["text"])
+        for ref in part["source_refs"]:
+            print(f"  [PDF p.{pages[ref['chunk_id']]} · {ref['chunk_id']}] {ref['quote']}")
+    if answer["limitation"]:
+        print(answer["limitation"])
+
+
+def prerequisite_choices(app, version):
+    if not app.library.available():
+        return []
+    links = app.store.rows("SELECT * FROM lesson_links WHERE version_id=?", (version,))
+    if not links:
+        return []
+    link = links[0]
+    index = app.store.rows("SELECT * FROM book_indexes WHERE id=?", (link["index_id"],))[0]
+    book_id = index["book_id"]
+    needed = app.library.prerequisites(book_id, link["section_id"], index)
+    skipped = []
+    for point in needed:
+        print(f"必要前置：{point['title']}（{point['section_id']} · {point['key']}）")
+        if not sys.stdin.isatty():
+            raise AppError(f"请在交互终端选择补学、自报掌握或本次跳过：teach start {version}")
+        choice = input("1 补学 / 2 我已掌握 / 3 本次跳过 [1]：").strip()
+        if choice == "2":
+            app.library.mastery(book_id, point=point["key"], index=index)
+        elif choice == "3":
+            skipped.append(point["key"])
+        else:
+            print(f"补学入口：teach learn {book_id} --section {point['section_id']}")
+            print(f"完成后返回：teach start {version}")
+            return None
+    return skipped
+
+
 def dispatch(app, args):
     command = args.command
     if command == "demo":
@@ -548,7 +684,53 @@ def dispatch(app, args):
             print(f"  {section.id} p.{section.start_page}–{section.end_page} {section.title}")
         if book.unavailable_pages:
             print(f"无文本页：{book.unavailable_pages}，不在可教学范围内。")
-        print(f"下一步：teach draft {book.id} --section s1")
+        print(f"下一步：teach index {book.id}；或直接 teach ask {book.id} --text '问题'")
+    elif command == "index":
+        with DraftProgress() as progress:
+            result = app.library.index(args.book, progress, new=args.new)
+        print(f"知识结构：{result['id']}；查看：teach outline {args.book}")
+    elif command == "learn":
+        with DraftProgress() as progress:
+            identifier = app.library.learn(args.book, args.section, progress, new=args.new)
+        print(f"教学版本：{identifier}；恢复：teach prepare {identifier}")
+        if app.version(identifier)[0]["status"] == "published":
+            existing = [
+                r
+                for r in app.store.rows(
+                    "SELECT * FROM sessions WHERE version_id=? ORDER BY updated_at DESC",
+                    (identifier,),
+                )
+                if json.loads(r["data"])["lifecycle"] in {"active", "paused"}
+            ]
+            argv = ["resume", existing[0]["id"]] if existing else ["start", identifier]
+            dispatch(app, parser().parse_args(argv))
+        else:
+            run_preparation(app, identifier)
+    elif command == "ask":
+        with DraftProgress() as progress:
+            record = app.library.ask(args.book, args.text, progress)
+        print_book_answer(record)
+    elif command == "mastery":
+        index = app.library.active(args.book)
+        if not index:
+            raise AppError("请先完成 teach index BOOK。")
+        points = [
+            p
+            for p in json.loads(index["data"])["points"]
+            if p["section_id"] == args.section or p["key"] == args.point
+        ]
+        if not points:
+            raise AppError("没有匹配的章节或知识点。")
+        print(f"范围：{args.section or args.point}；{len(points)} 个知识点")
+        if args.section and sys.stdin.isatty():
+            if input("确认标记/撤销整章自报掌握？[y/N] ").strip().lower() not in {"y", "yes", "是"}:
+                return
+        app.library.mastery(args.book, section=args.section, point=args.point, mark=args.mark)
+        print(
+            "已记录用户自报掌握（不替代评分证据）。"
+            if args.mark
+            else "已撤销自报掌握，练习记录保留。"
+        )
     elif command == "books":
         for row in app.store.rows("SELECT id,data FROM books"):
             data = json.loads(row["data"])
@@ -559,6 +741,36 @@ def dispatch(app, args):
     elif command == "outline":
         for section in app.book(args.book).sections:
             print(f"{section.id} p.{section.start_page}–{section.end_page} {section.title}")
+        if app.library.available():
+            index = app.library.active(args.book)
+            pending = app.store.rows(
+                "SELECT id FROM book_indexes WHERE book_id=? AND status='building'", (args.book,)
+            )
+            print(
+                "梳理状态："
+                + ("已有可用版本" if index else "尚未完成")
+                + ("；有未完成任务，可运行 index 恢复" if pending else "")
+            )
+            if index:
+                marks = app.library.marks(args.book, index)
+                verified = app.library.verified(args.book, index)
+                data = json.loads(index["data"])
+                for point in data["points"]:
+                    status = (
+                        "已验证掌握"
+                        if point["key"] in verified
+                        else "用户自报已掌握"
+                        if point["key"] in marks
+                        else "未验证"
+                    )
+                    print(f"  {point['key']} [{point['section_id']}] {point['title']} · {status}")
+                for edge in data["relations"]:
+                    print(
+                        f"  {edge['source']} → {edge['target']} [{edge['kind']}] {edge['reason']}"
+                    )
+        unavailable = app.book(args.book).unavailable_pages
+        if unavailable:
+            print(f"不可读取页面：{unavailable}；知识结构不覆盖这些页面。")
     elif command == "draft":
         if not args.resume and not args.book:
             raise AppError("请提供教材 ID 或 --resume VERSION。")
@@ -626,7 +838,14 @@ def dispatch(app, args):
                     raise AppError(f"请先完成准备：teach prepare {args.version}{suffix}")
                 if not confirm_prepared(app, args.version):
                     return
+            skipped = prerequisite_choices(app, args.version)
+            if skipped is None:
+                return
             identifier = app.start(args.version, args.point, args.due)
+            if skipped:
+                session_row, session_state = app.session(identifier)
+                session_state["prerequisite_skips"] = skipped
+                app.store.save_session(identifier, session_row["revision"], session_state)
             print(f"会话：{identifier}", flush=True)
             with DraftProgress() as progress:
                 state = app.advance(identifier, progress=progress)

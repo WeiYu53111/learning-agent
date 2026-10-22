@@ -97,7 +97,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3):
+            if version not in (0, 1, 2, 3, 4, 5):
                 raise AppError("数据库版本不兼容，请使用新的数据目录。")
             if version == 0:
                 conn.executescript(SCHEMA)
@@ -113,7 +113,47 @@ class Store:
                     "REFERENCES versions(id),data TEXT NOT NULL)"
                 )
                 conn.execute("PRAGMA user_version=3")
+            if version < 4:
+                conn.execute(
+                    "CREATE TABLE attempt_context(attempt_id TEXT PRIMARY KEY "
+                    "REFERENCES attempts(id) ON DELETE CASCADE,data TEXT NOT NULL)"
+                )
+                conn.execute(
+                    "CREATE TABLE answer_rounds(attempt_id TEXT REFERENCES attempts(id) "
+                    "ON DELETE CASCADE,round INTEGER NOT NULL,data TEXT NOT NULL,"
+                    "PRIMARY KEY(attempt_id,round))"
+                )
+                for table in ("attempt_context", "answer_rounds"):
+                    conn.execute(
+                        f"CREATE TRIGGER immutable_{table} BEFORE UPDATE ON {table} "
+                        "BEGIN SELECT RAISE(ABORT,'answer context is immutable'); END;"
+                    )
+                conn.execute("PRAGMA user_version=4")
+            if version < 5:
+                for statement in (
+                    "CREATE TABLE IF NOT EXISTS book_indexes(id TEXT PRIMARY KEY, book_id TEXT "
+                    "NOT NULL REFERENCES books(id), status TEXT NOT NULL, data TEXT NOT NULL, "
+                    "created_at TEXT NOT NULL)",
+                    "CREATE TABLE IF NOT EXISTS book_steps(owner_id TEXT NOT NULL, step TEXT "
+                    "NOT NULL, data TEXT NOT NULL, PRIMARY KEY(owner_id,step))",
+                    "CREATE TABLE IF NOT EXISTS lesson_links(version_id TEXT PRIMARY KEY "
+                    "REFERENCES versions(id), index_id TEXT NOT NULL REFERENCES "
+                    "book_indexes(id), section_id TEXT NOT NULL, data TEXT NOT NULL)",
+                    "CREATE TABLE IF NOT EXISTS self_mastery(book_id TEXT NOT NULL REFERENCES "
+                    "books(id), point_key TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at "
+                    "TEXT NOT NULL, PRIMARY KEY(book_id,point_key,fingerprint))",
+                    "CREATE TABLE IF NOT EXISTS book_questions(id TEXT PRIMARY KEY, book_id "
+                    "TEXT NOT NULL REFERENCES books(id), session_id TEXT, data TEXT NOT NULL, "
+                    "created_at TEXT NOT NULL)",
+                    "CREATE TABLE IF NOT EXISTS search_chunks(book_id TEXT NOT NULL REFERENCES "
+                    "books(id), chunk_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY "
+                    "KEY(book_id,chunk_id))",
+                ):
+                    conn.execute(statement)
+                conn.execute("PRAGMA user_version=5")
             conn.execute("PRAGMA journal_mode=WAL")
+            # Materialize WAL state before subsequent read-only connections.
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
 
     @contextmanager
     def connect(self, readonly=False):

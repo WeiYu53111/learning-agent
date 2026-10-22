@@ -6,11 +6,12 @@ import json
 from pathlib import Path
 
 from .answering import answer_state, combined_answer, question_text
+from .audit_refs import audit_ref_errors, diagnostic_summary, merge_audit_refs
 from .backends import BackendRegistry, BackendSpec
-from .demo import DemoGateway
+from .demo import EvidenceDemoGateway
 from .gateway import Gateway, Settings
 from .knowledge import check_refs, ordered_objectives, parse_pdf, quality_report
-from .learner import project, score, validate_assessment
+from .learner import outcome, project, validate_assessment
 from .models import AppError, Assessment, Audit, Book, Draft, DraftPatch, Question
 from .revision import change_summary, merge_patch
 from .storage import Store, dumps, now, uid
@@ -29,12 +30,15 @@ class Application:
         self.injected_gateway = gateway
         self.backends = backends or BackendRegistry()
         self._gateways = {}
+        from .book_learning import BookLearning
+
+        self.library = BookLearning(self)
 
     def gateway(self, book, owner=None):
         if self.injected_gateway:
             return self.injected_gateway
         if self.settings is not None:
-            return DemoGateway() if book.demo else Gateway(self.settings)
+            return EvidenceDemoGateway() if book.demo else Gateway(self.settings)
         binding = (
             self.store.rows("SELECT * FROM backend_bindings WHERE owner_id=?", (owner,))
             if owner
@@ -115,6 +119,7 @@ class Application:
             conn.execute(
                 "INSERT INTO books VALUES(?,?,?)", (book.id, book.sha256, book.model_dump_json())
             )
+        self.library.ensure_search(book)
         return book
 
     @staticmethod
@@ -153,6 +158,25 @@ class Application:
                 raise AppError("教材 PDF 路径超出数据目录，停止删除。")
             conn.execute("DELETE FROM events WHERE owner_id=?", (identifier,))
             conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (identifier,))
+            if self.library.available():
+                index_ids = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT id FROM book_indexes WHERE book_id=?", (identifier,)
+                    )
+                ]
+                ask_ids = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT id FROM book_questions WHERE book_id=?", (identifier,)
+                    )
+                ]
+                for owner in index_ids + ask_ids:
+                    conn.execute("DELETE FROM book_steps WHERE owner_id=?", (owner,))
+                    conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (owner,))
+                    conn.execute("DELETE FROM events WHERE owner_id=?", (owner,))
+                for table in ("book_questions", "self_mastery", "search_chunks", "book_indexes"):
+                    conn.execute(f"DELETE FROM {table} WHERE book_id=?", (identifier,))
             conn.execute("DELETE FROM books WHERE id=?", (identifier,))
         # Remove the copy only after commit, so a database failure cannot lose the PDF.
         try:
@@ -171,6 +195,9 @@ class Application:
             conn.execute("DELETE FROM preparations WHERE version_id=?", (identifier,))
             conn.execute("DELETE FROM events WHERE owner_id=?", (identifier,))
             conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (identifier,))
+            if self.library.available():
+                conn.execute("DELETE FROM lesson_links WHERE version_id=?", (identifier,))
+                conn.execute("DELETE FROM book_steps WHERE owner_id=?", (identifier,))
             conn.execute("DELETE FROM versions WHERE id=?", (identifier,))
 
     def create_draft(self, book_id, section_id):
@@ -207,6 +234,10 @@ class Application:
         row, book, chunks = self.version(identifier)
         if row["status"] != "draft" or row["data"] != "{}":
             raise AppError("草稿已完成提取；请使用 revise 或编辑，而不是覆盖。")
+        if self.library.available() and self.store.rows(
+            "SELECT version_id FROM lesson_links WHERE version_id=?", (identifier,)
+        ):
+            return self.library.build_lesson(identifier, report_progress)
         batches = self.batches(chunks)
         cached = {
             r["position"]: r["data"]
@@ -482,6 +513,15 @@ class Application:
         row, book, _ = self.version(identifier)
         new_id = self.create_draft(book.id, row["section_id"])
         self.save_draft(new_id, Draft.model_validate_json(row["data"]), f"派生自 {identifier}")
+        if self.library.available():
+            links = self.store.rows("SELECT * FROM lesson_links WHERE version_id=?", (identifier,))
+            if links:
+                link = links[0]
+                with self.store.connect() as conn:
+                    conn.execute(
+                        "INSERT INTO lesson_links VALUES(?,?,?,?)",
+                        (new_id, link["index_id"], link["section_id"], link["data"]),
+                    )
         return new_id
 
     def audit(self, identifier, progress=None, preparation=None):
@@ -509,9 +549,59 @@ class Application:
         audit = gateway.audit(draft, chunks)
         emit(f"{label}：校验审核报告引用")
         chunk_map = {c.id: c for c in chunks}
-        for issue in audit.issues:
-            if check_refs(issue.source_refs, chunk_map):
-                raise AppError("审核返回了无效原文引用，请重试。")
+        ref_errors = audit_ref_errors(audit, chunk_map)
+        if ref_errors:
+
+            def record_failure(kind, data):
+                with self.store.connect() as conn:
+                    self.store.event(
+                        conn,
+                        identifier,
+                        kind,
+                        {
+                            "revision": row["revision"],
+                            "model": gateway.model,
+                            **data,
+                        },
+                    )
+
+            record_failure(
+                "audit_refs_rejected", {"audit": audit.model_dump(), "errors": ref_errors}
+            )
+            emit(f"{label}：引用校验失败：{diagnostic_summary(ref_errors)}")
+            emit(f"{label}：自动纠正错误引用（最多一次），等待模型返回")
+            repair = None
+            candidate = None
+            remaining = ref_errors
+            try:
+                repair_method = getattr(gateway, "repair_audit_refs", None)
+                if repair_method is None:
+                    raise AppError("当前后端不支持引用纠正。")
+                repair = repair_method(audit, ref_errors, chunks)
+                candidate = merge_audit_refs(audit, ref_errors, repair)
+                remaining = audit_ref_errors(candidate, chunk_map)
+                if remaining:
+                    raise AppError("纠正后引用仍未通过严格校验。")
+            except AppError as exc:
+                record_failure(
+                    "audit_refs_repair_failed",
+                    {
+                        "audit": (candidate or audit).model_dump(),
+                        "repair": repair.model_dump() if repair is not None else None,
+                        "errors": remaining,
+                        "reason": str(exc),
+                    },
+                )
+                raise AppError(
+                    "审核返回了无效原文引用，自动纠正未成功："
+                    + str(exc)
+                    + "；"
+                    + diagnostic_summary(remaining)
+                    + f"；失败详情已保存，可恢复：teach prepare {identifier}"
+                ) from exc
+            record_failure("audit_refs_repaired", {"repair": repair.model_dump()})
+            audit = candidate
+            emit(f"{label}：引用纠正已通过严格校验")
         with self.store.connect() as conn:
             conn.execute(
                 "UPDATE versions SET audit=?,reviewed_revision=?,decisions='{}',"
@@ -596,6 +686,8 @@ class Application:
         for row in rows:
             row["question"] = json.loads(row["question"])
             row["assessment"] = json.loads(row["assessment"])
+            rounds = self.answer_rounds(row["id"])
+            row["assisted"] = row["assisted"] or any(r["assisted"] for r in rounds)
         return rows
 
     def seen_questions(self, version_id, objective_key):
@@ -621,9 +713,15 @@ class Application:
         for attempt in self.store.rows(
             "SELECT id,objective_key FROM attempts WHERE version_id=?", (version_id,)
         ):
-            detail = result.setdefault(attempt["objective_key"], {
-                "attempts": 0, "needs_review": [], "invalid_question": 0, "pending": 0,
-            })
+            detail = result.setdefault(
+                attempt["objective_key"],
+                {
+                    "attempts": 0,
+                    "needs_review": [],
+                    "invalid_question": 0,
+                    "pending": 0,
+                },
+            )
             detail["attempts"] += 1
             detail["pending"] += 1
         for entry in self.evidence(version_id):
@@ -646,14 +744,23 @@ class Application:
             return None
         point = next(p for p in draft.points if any(o.key == current for o in p.objectives))
         mastery = self.progress(row["version_id"])[current]
-        attempt = next((e for e in self.evidence(row["version_id"])
-                        if e["session_id"] == identifier
-                        and e["question_id"] == state.get("question_id")), None)
+        attempt = next(
+            (
+                e
+                for e in self.evidence(row["version_id"])
+                if e["session_id"] == identifier and e["question_id"] == state.get("question_id")
+            ),
+            None,
+        )
         return {
-            "title": point.title, "description": obj.description, "key": current,
-            "mastery": mastery, "attempt": attempt,
-            "misconceptions": [m.description for m in draft.misconceptions
-                               if m.code in mastery["misconceptions"]],
+            "title": point.title,
+            "description": obj.description,
+            "key": current,
+            "mastery": mastery,
+            "attempt": attempt,
+            "misconceptions": [
+                m.description for m in draft.misconceptions if m.code in mastery["misconceptions"]
+            ],
         }
 
     def start(self, version_id, point=None, review=False):
@@ -729,11 +836,11 @@ class Application:
                 e for e in evidence if e["session_id"] == identifier and e["objective_key"] == key
             ]
             failures = sum(
-                Assessment.model_validate(e["assessment"]).status == "valid"
-                and not score(
+                outcome(
                     Assessment.model_validate(e["assessment"]),
                     Question.model_validate(e["question"]),
-                )[1]
+                )
+                == "incorrect"
                 for e in recent
                 if not e["practice_only"]
             )
@@ -789,14 +896,20 @@ class Application:
         selected_chunks = [c for c in chunks if c.id in source_ids]
         gateway = self.gateway(book, identifier)
         task_history = list(history)
+        if mastery["gaps"]:
+            task_history.append({"open_gaps": mastery["gaps"]})
         for generation in range(2):
             if progress:
                 progress(
                     ("新题引用无效，自动修正（1/1）" if generation else "生成下一题")
                     + f"；后端/模型：{gateway.model}"
                 )
-            task = gateway.task(
-                obj, selected_chunks, action, task_history,
+            generate = getattr(gateway, "task_evidence", gateway.task)
+            task = generate(
+                obj,
+                selected_chunks,
+                action,
+                task_history,
                 [m.model_dump() for m in draft.misconceptions],
             )
             if task.objective_key != current or task.action != action or not task.question:
@@ -816,15 +929,25 @@ class Application:
                 self.store.event(conn, identifier, "task_rejected", rejected)
             if generation:
                 raise AppError(
-                    "新题引用经一次自动修正仍未通过校验：" + "；".join(errors)
+                    "新题引用经一次自动修正仍未通过校验："
+                    + "；".join(errors)
                     + "。已保存的回答与评分不受影响，请 /continue 重试。"
                 )
-            task_history = history + [rejected]
+            task_history = task_history + [rejected]
         known_codes = {m.code for m in draft.misconceptions}
         if not set(task.question.targeted_misconception_codes) <= known_codes:
             raise AppError("题目引用了未知误解码。")
         if not set(mastery["misconceptions"]) <= set(task.question.targeted_misconception_codes):
             raise AppError("新题没有针对当前关键误解，请重试生成。")
+        coverage = task.question.gap_coverage
+        core_keys = {r.key for r in task.question.rubric if r.critical}
+        expected_gaps = {g["gap_id"] for g in mastery["gaps"]}
+        if (
+            len({c.gap_id for c in coverage}) != len(coverage)
+            or {c.gap_id for c in coverage} != expected_gaps
+            or any(not set(c.rubric_keys) <= core_keys for c in coverage)
+        ):
+            raise AppError("补练题未正确覆盖当前缺口，请重试生成。")
         prior_groups = {q["novelty_group"] for q in seen}
         prior_stems = {question_text(q).strip().casefold() for q in seen}
         if (
@@ -843,6 +966,7 @@ class Application:
             why=f"{current} 状态 {mastery['status']}，选择 {action}。",
         )
         state.pop("answer_input", None)
+        state.pop("clarification", None)
         answer_state(state)
         with self.store.connect() as conn:
             self.store.save_session(identifier, row["revision"], state, conn)
@@ -863,7 +987,7 @@ class Application:
 
     def answer_row(self, identifier):
         row, state = self.session(identifier)
-        if state["phase"] != "awaiting_answer" or not state["task"]:
+        if state["phase"] not in {"awaiting_answer", "awaiting_clarification"} or not state["task"]:
             raise AppError("当前没有待答题。")
         answer_state(state)
         return row, state
@@ -896,7 +1020,9 @@ class Application:
         if len(saved["answers"]) < len(saved["parts"]):
             self.store.save_session(identifier, row["revision"], state)
             return state
-        return self._submit_answer(identifier, combined_answer(saved), row, state, progress=progress)
+        return self._submit_answer(
+            identifier, combined_answer(saved), row, state, progress=progress
+        )
 
     def submit(self, identifier, answer, progress=None):
         row, state = self.answer_row(identifier)
@@ -908,8 +1034,16 @@ class Application:
     def _submit_answer(self, identifier, answer, row, state, progress=None):
         if not answer.strip() or len(answer) > 10000:
             raise AppError("回答必须为 1–10000 字符。")
+        if state["phase"] == "awaiting_clarification":
+            return self.submit_clarification(identifier, answer, row, state, progress)
         question = state["task"]["question"]
         attempt_id = uid("attempt")
+        ver, book, _ = self.version(row["version_id"])
+        objective = Draft.model_validate_json(ver["data"]).objectives()[state["current"]]
+        context = {
+            "rule_version": 2 if hasattr(self.gateway(book, identifier), "grade_evidence") else 1,
+            "objective": objective.model_dump(),
+        }
         state.update(phase="evaluating", pending_attempt=attempt_id)
         with self.store.connect() as conn:
             conn.execute(
@@ -928,6 +1062,39 @@ class Application:
                     now(),
                 ),
             )
+            conn.execute("INSERT INTO attempt_context VALUES(?,?)", (attempt_id, dumps(context)))
+            self.store.save_session(identifier, row["revision"], state, conn)
+        return self.finish_assessment(identifier, progress=progress)
+
+    def answer_rounds(self, attempt_id):
+        return [
+            json.loads(r["data"])
+            for r in self.store.rows(
+                "SELECT data FROM answer_rounds WHERE attempt_id=? ORDER BY round", (attempt_id,)
+            )
+        ]
+
+    def submit_clarification(self, identifier, answer, row, state, progress=None):
+        clarification = state["clarification"]
+        attempt_id = clarification["attempt_id"]
+        rounds = self.answer_rounds(attempt_id)
+        if len(rounds) >= 2:
+            raise AppError("已达到两轮补充上限。")
+        original = self.store.get("attempts", attempt_id)["answer"]
+        if len(original) + sum(len(r["answer"]) for r in rounds) + len(answer) > 10000:
+            raise AppError("原回答与补充回答合计最多 10000 字符。")
+        data = {
+            "question": clarification["question"],
+            "answer": answer,
+            "round": len(rounds) + 1,
+            "assisted": state["hint_count"] > 0,
+        }
+        state.update(phase="evaluating", pending_attempt=attempt_id)
+        with self.store.connect() as conn:
+            conn.execute(
+                "INSERT INTO answer_rounds VALUES(?,?,?)",
+                (attempt_id, len(rounds) + 1, dumps(data)),
+            )
             self.store.save_session(identifier, row["revision"], state, conn)
         return self.finish_assessment(identifier, progress=progress)
 
@@ -937,15 +1104,38 @@ class Application:
         question = Question.model_validate_json(attempt["question"])
         source_ids = {r.chunk_id for r in question.source_refs}
         gateway = self.gateway(book, attempt["session_id"])
-        assessment = gateway.grade(
+        contexts = self.store.rows(
+            "SELECT data FROM attempt_context WHERE attempt_id=?", (attempt["id"],)
+        )
+        context = json.loads(contexts[0]["data"]) if contexts else {"rule_version": 1}
+        rounds = self.answer_rounds(attempt["id"])
+        answer = "\n\n".join([attempt["answer"], *[r["answer"] for r in rounds]])
+        args = (
             question,
-            attempt["answer"],
+            answer,
             [c for c in chunks if c.id in source_ids],
             [m.model_dump() for m in draft.misconceptions],
         )
-        validate_assessment(
-            assessment, question, attempt["answer"], {m.code for m in draft.misconceptions}
-        )
+        if context["rule_version"] == 2:
+            assessment = gateway.grade_evidence(*args, {**context, "rounds": rounds})
+        else:
+            assessment = gateway.grade(*args)
+        if assessment.rule_version != context["rule_version"]:
+            raise AppError("评分规则版本与作答不一致。")
+        validate_assessment(assessment, question, answer, {m.code for m in draft.misconceptions})
+        if assessment.rule_version == 2:
+            answers = [attempt["answer"], *[r["answer"] for r in rounds]]
+            for item in [*assessment.items, *assessment.misconception_results]:
+                sources = []
+                for quote in item.answer_quotes:
+                    source = next((i for i, text in enumerate(answers) if quote in text), None)
+                    if source is None:
+                        raise AppError("引用必须来自某一轮学习者回答，不能跨轮拼接。")
+                    sources.append(source)
+                if hasattr(item, "quote_rounds"):
+                    item.quote_rounds = sources
+        if outcome(assessment, question) == "insufficient":
+            assessment.correction = ""
         return assessment, gateway.model
 
     def finish_assessment(self, identifier, progress=None):
@@ -961,16 +1151,32 @@ class Application:
             raise AppError(
                 f"{exc} 回答已保存，可运行 teach resume {identifier} 恢复评分。"
             ) from exc
+        question = Question.model_validate_json(attempt["question"])
+        rounds = self.answer_rounds(attempt["id"])
+        insufficient = outcome(assessment, question) == "insufficient"
+        followup = insufficient and len(rounds) < 2
+        if followup and not assessment.followup.strip():
+            raise AppError("评价缺少必要追问，回答已保存，请恢复评分。")
         state.update(phase="feedback_ready", feedback=assessment.model_dump(), pending_attempt=None)
+        if followup:
+            state.update(phase="awaiting_clarification", feedback=None)
+            state["clarification"] = {"attempt_id": attempt["id"], "question": assessment.followup}
+            state["answer_input"] = {
+                "question_id": state["question_id"],
+                "context": "请补充说明（最多两轮）",
+                "parts": [assessment.followup],
+                "answers": [],
+                "lines": [],
+            }
         with self.store.connect() as conn:
             conn.execute(
                 "INSERT INTO assessments VALUES(?,?,?,?,?,?,?)",
                 (
                     uid("assessment"),
                     attempt["id"],
-                    1,
+                    len(rounds) + 1,
                     assessment.model_dump_json(),
-                    "首次评分",
+                    "补充评价" if rounds else "首次评分",
                     model,
                     now(),
                 ),
@@ -987,6 +1193,12 @@ class Application:
         )[0]["rev"]
         if not old:
             raise AppError("首次评分尚未完成，请恢复原会话。")
+        _, session_state = self.session(attempt["session_id"])
+        if session_state.get("pending_attempt") == attempt_id or (
+            session_state["phase"] == "awaiting_clarification"
+            and session_state.get("clarification", {}).get("attempt_id") == attempt_id
+        ):
+            raise AppError("作答尚在评价或追问中，请恢复原会话。")
         assessment, model = self.assess(attempt)
         with self.store.connect() as conn:
             conn.execute(
@@ -1026,7 +1238,7 @@ class Application:
 
     def hint(self, identifier):
         row, state = self.session(identifier)
-        if state["phase"] != "awaiting_answer":
+        if state["phase"] not in {"awaiting_answer", "awaiting_clarification"}:
             raise AppError("当前没有待答题。")
         hints = state["task"]["question"]["hints"]
         if state["hint_count"] >= len(hints):

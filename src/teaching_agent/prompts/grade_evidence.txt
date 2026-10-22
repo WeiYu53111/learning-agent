@@ -1,0 +1,3 @@
+依据固定rubric逐项判断回答是否满足要求，每项恰一次，返回verdict：met（已满足）、incorrect（明确错误）、insufficient（证据不足）。不输出分数。quote_rounds留空，由程序依据原始回答及补充轮次标注引用来源（0表示原回答）。核心要求由critical标识；学习目标只帮助理解，不得追加题外要求。接受简洁、同义表达和唯一上下文指代，不要求重复题干前提，不得替学习者补充推理。格式只有在题干明确考查时才影响判断。met和incorrect必须引用回答原句，insufficient可无引用，reason解释依据。遗漏或含糊不等于明确错误。题干与rubric冲突或依据有问题返回invalid_question；服务性无法评价返回needs_review。
+answer是学习者各轮回答的合并文本，rounds保存追问与补充回答的来源。只能引用学习者回答，不得把追问或教材当作回答证据。结合各轮判断，若补充回答明确纠正先前说法，可据最新说明判断；仍互相矛盾则证据不足。对每个targeted_misconception_code返回supports/refutes/inconclusive及证据。
+如果没有核心错误但存在核心证据不足，followup只问一个原题范围内的缺失点，保持中性，不提供选项暗示、正确答案或推理步骤；feedback仅描述尚待澄清的要求，correction必须为空。最多两轮补充，达到上限仍保留insufficient，不得强行判错或判通过。其他情形followup为空。不要输出整体通过布尔值，由程序根据核心项汇总。rule_version固定为2。

@@ -10,7 +10,16 @@ from dataclasses import dataclass
 import httpx
 from pydantic import ValidationError
 
-from .models import AppError, Assessment, Audit, Draft, DraftPatch, Task
+from .models import (
+    AppError,
+    Assessment,
+    Audit,
+    AuditRefRepair,
+    Draft,
+    DraftPatch,
+    EvidenceAssessment,
+    Task,
+)
 from .prompt_loader import load_prompt
 
 
@@ -63,14 +72,11 @@ class ModelOperations:
 
     @staticmethod
     def messages(operation, body, schema):
-        prompt = (
-            load_prompt("common")
-            + "\n"
-            + load_prompt(operation)
-            + "\nJSON Schema:\n"
-            + schema
-        )
+        prompt = load_prompt("common") + "\n" + load_prompt(operation) + "\nJSON Schema:\n" + schema
         return [{"role": "system", "content": prompt}, {"role": "user", "content": body}]
+
+    def book_operation(self, operation, payload, contract):
+        return self.call(operation, payload, contract)
 
     def extract(self, chunks):
         return self.call("extract", {"chunks": [c.model_dump() for c in chunks]}, Draft)
@@ -80,6 +86,20 @@ class ModelOperations:
             "audit",
             {"draft": draft.model_dump(), "chunks": [c.model_dump() for c in chunks]},
             Audit,
+        )
+
+    def repair_audit_refs(self, audit, errors, chunks):
+        indices = sorted({error["issue_index"] for error in errors})
+        return self.call(
+            "repair_audit_refs",
+            {
+                "issues": [
+                    {"issue_index": i, "issue": audit.issues[i].model_dump()} for i in indices
+                ],
+                "errors": errors,
+                "chunks": [c.model_dump() for c in chunks],
+            },
+            AuditRefRepair,
         )
 
     def revise(self, draft, chunks, instruction):
@@ -122,6 +142,33 @@ class ModelOperations:
                 "misconceptions": misconceptions,
             },
             Task,
+        )
+
+    def task_evidence(self, objective, chunks, action, history, misconceptions):
+        return self.call(
+            "task_evidence",
+            {
+                "objective_key": objective.key,
+                "objective": objective.model_dump(),
+                "action": action,
+                "chunks": [c.model_dump() for c in chunks],
+                "seen_questions": history,
+                "misconceptions": misconceptions,
+            },
+            Task,
+        )
+
+    def grade_evidence(self, question, answer, chunks, misconceptions, context):
+        return self.call(
+            "grade_evidence",
+            {
+                "question": question.model_dump(),
+                "answer": answer,
+                "chunks": [c.model_dump() for c in chunks],
+                "misconceptions": misconceptions,
+                **context,
+            },
+            EvidenceAssessment,
         )
 
     def grade(self, question, answer, chunks, misconceptions):

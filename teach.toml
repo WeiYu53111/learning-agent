@@ -6,7 +6,7 @@ type = "codex_cli"
 executable = "codex"
 auth = "existing_login"
 timeout_seconds = 600
-input_chars = 96000
+input_chars = 160000
 model = "gpt-6-astra"
 # Without model, Codex uses its built-in default, not the user's config.toml.
 

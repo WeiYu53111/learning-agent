@@ -49,6 +49,11 @@ class Rubric(Contract):
     weight: float = Field(gt=0, le=1, allow_inf_nan=False)
 
 
+class GapCoverage(Contract):
+    gap_id: str
+    rubric_keys: list[str] = Field(min_length=1)
+
+
 class Question(Contract):
     stem: str = Field(min_length=1, max_length=6000)
     parts: list[Annotated[str, Field(min_length=1, max_length=6000)]] = Field(
@@ -60,6 +65,7 @@ class Question(Contract):
     novelty_group: str = Field(min_length=1)
     source_refs: list[Ref] = Field(min_length=1)
     targeted_misconception_codes: list[str] = Field(default_factory=list)
+    gap_coverage: list[GapCoverage] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def valid_rubric(self):
@@ -146,6 +152,16 @@ class Audit(Contract):
     issues: list[Issue]
 
 
+class AuditRefReplacement(Contract):
+    issue_index: int = Field(ge=0)
+    ref_index: int = Field(ge=0)
+    ref: Ref
+
+
+class AuditRefRepair(Contract):
+    replacements: list[AuditRefReplacement]
+
+
 class Task(Contract):
     objective_key: str
     action: Literal["DIAGNOSE", "REASSESS", "REMEDIATE", "REVIEW", "EXPLAIN"]
@@ -168,12 +184,27 @@ class MisconceptionResult(Contract):
     reason: str
 
 
+class EvidenceItem(Contract):
+    rubric_key: str
+    verdict: Literal["met", "incorrect", "insufficient"]
+    quote_rounds: list[int] = Field(default_factory=list)
+    answer_quotes: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+
+
 class Assessment(Contract):
     status: Literal["valid", "needs_review", "invalid_question"]
-    items: list[ItemResult]
+    rule_version: Literal[1, 2] = 1
+    items: list[ItemResult | EvidenceItem]
     feedback: str
     correction: str = ""
+    followup: str = ""
     misconception_results: list[MisconceptionResult] = Field(default_factory=list)
+
+
+class EvidenceAssessment(Assessment):
+    rule_version: Literal[2] = 2
+    items: list[EvidenceItem]
 
 
 class AppError(Exception):

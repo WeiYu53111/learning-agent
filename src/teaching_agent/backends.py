@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .demo import DemoGateway
+from .demo import EvidenceDemoGateway
 from .gateway import Gateway, Settings
 from .models import AppError
 
@@ -17,12 +17,15 @@ from .models import AppError
 class ModelBackend(Protocol):
     model: str
 
+    def book_operation(self, operation, payload, contract): ...
     def extract(self, chunks): ...
     def audit(self, draft, chunks): ...
     def revise(self, draft, chunks, instruction): ...
     def revise_patch(self, draft, chunks, instruction): ...
     def task(self, objective, chunks, action, history, misconceptions): ...
     def grade(self, question, answer, chunks, misconceptions): ...
+    def task_evidence(self, objective, chunks, action, history, misconceptions): ...
+    def grade_evidence(self, question, answer, chunks, misconceptions, context): ...
 
 
 class BackendSpec(BaseModel):
@@ -90,7 +93,7 @@ class BackendRegistry:
     @staticmethod
     def build(spec: BackendSpec) -> ModelBackend:
         if spec.type == "demo":
-            return DemoGateway()
+            return EvidenceDemoGateway()
         if spec.type == "codex_cli":
             from .codex_gateway import CodexGateway
 

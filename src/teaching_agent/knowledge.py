@@ -130,7 +130,7 @@ def ordered_objectives(draft: Draft, selected=None):
     return result
 
 
-def quality_report(draft: Draft, chunks: list[Chunk]) -> dict:
+def quality_report(draft: Draft, chunks: list[Chunk], *, structure_only=False) -> dict:
     errors, warnings = [], []
     chunk_map = {c.id: c for c in chunks}
     points = [p.key for p in draft.points]
@@ -157,9 +157,10 @@ def quality_report(draft: Draft, chunks: list[Chunk]) -> dict:
     covered_chunks, mapped = set(), set()
     for obj in objectives:
         errors.extend(check_refs(obj.source_refs, chunk_map))
-        errors.extend(check_refs(obj.sample_question.source_refs, chunk_map))
-        if set(obj.sample_question.targeted_misconception_codes) - set(codes):
-            errors.append(f"目标 {obj.key} 的试题引用未知误解码。")
+        if not structure_only:
+            errors.extend(check_refs(obj.sample_question.source_refs, chunk_map))
+            if set(obj.sample_question.targeted_misconception_codes) - set(codes):
+                errors.append(f"目标 {obj.key} 的试题引用未知误解码。")
     for item in draft.content_items:
         errors.extend(check_refs(item.source_refs, chunk_map))
         covered_chunks.update(r.chunk_id for r in item.source_refs)

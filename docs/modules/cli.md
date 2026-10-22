@@ -1,5 +1,7 @@
 # CLI 模块详细设计
 
+> 2026-10-22 版本说明：本文下方的数值评分、失败清零与原作答状态机描述保留为 v1 设计记录。新作答已使用 v2 核心要求判断、失败减一次、定向缺口解除和最多两轮追问；旧作答及其复核沿用 v1。当前实现与边界以[评分进度记录](../grading-issues.md)为准。
+
 ## 1. 职责与依赖
 
 CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当前通过 Application 执行业务，并使用 Store 做部分列表查询，构造 BackendRegistry 注入应用；不自行计算掌握或处理供应商认证。全面使用类型化 Facade/ViewModel 是后续目标。
@@ -26,7 +28,7 @@ CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当�
 | `teach attempts SESSION` | 原始作答、最新评分修订及评分后端/模型 |
 | `teach reassess ATTEMPT --reason TEXT` | 显式复核原作答，创建新评估修订；不要求用户再答同题 |
 
-当前 import 不生成草稿，publish 不提供 `--yes`；发布门禁是当前修订通过程序校验、经过 audit 且无 error，再经人工确认。resolve 备注不能放行 error。完整命令含 export/apply/revise/resolve/clone/answer/next，见[命令清单](../prototype.md#6-当前命令清单)。`teach ask` 与 `/ask` 尚未实现。
+当前 import 不生成草稿，publish 不提供 `--yes`；发布门禁是当前修订通过程序校验、经过 audit 且无 error，再经人工确认。resolve 备注不能放行 error。完整命令含 export/apply/revise/resolve/clone/answer/next，见[命令清单](../prototype.md#6-当前命令清单)。新增 `teach index BOOK [--new]`、`teach learn BOOK --section SECTION [--new]`、`teach mastery BOOK (--section SECTION | --point POINT) (--mark | --clear)`、`teach ask BOOK --text QUESTION`。学习中的 `/ask QUESTION` 保留原题及答案缓冲，详见[全书学习方案](../book-learning-plan.md)。
 
 自动准备完成后，交互终端当场展示学习范围、实际修改及剩余建议并询问是否开始，默认否。确认后发布并进入教学；拒绝或 EOF 保留结果。非交互执行不发布。`start VERSION` 可对准备完成的草稿重新请求确认；对已发布版本保持原行为。
 
