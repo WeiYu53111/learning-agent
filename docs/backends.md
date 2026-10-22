@@ -88,3 +88,17 @@ output_tokens = 8000
 本次完整回归：41 项测试通过，Ruff 检查通过。
 
 2026-10-20：使用本机 ChatGPT 已有登录及 `http://127.0.0.1:7897` 代理，完成一次真实 Codex 空教材审核调用，返回 `{"issues":[]}` 并通过契约校验。未设置代理的首次调用达到 90 秒超时；后续独立诊断显示 WebSocket 重连后回退 HTTPS。此结果不等同于真实教材的提取与评分质量已验收。
+
+## 6. 提示词维护
+
+模型提示文本位于 `src/teaching_agent/prompts/`，随安装包发布：
+
+- `common.txt`：所有操作共用的系统约束。
+- `extract.txt`、`audit.txt`：教材提取与草稿审核。
+- `revise.txt`、`revise_patch.txt`：全量与局部修订。
+- `task.txt`、`grade.txt`：出题与评分。
+- `codex_data.txt`：Codex 后端的任务数据隔离提示。
+
+`prompt_loader.py` 通过 `importlib.resources` 按 UTF-8 加载固定名称的资源，不依赖启动目录。文件末尾的换行会被移除，内部空格和换行保留；代码在原有位置添加消息分隔和动态 JSON Schema。资源缺失、无法读取或为空会明确报错。
+
+2026-10-22 的独立化仅迁移文本，发送内容保持不变。`tests/fixtures/prompt_baseline.json` 保存迁移前六类操作的完整消息和 Codex 包装文本；`tests/test_prompts.py` 验证逐字符一致、工作目录独立性及加载失败处理。修改提示规则后应审核基线差异并同步更新测试预期，不能仅为通过测试覆盖基线；语义效果仍需另行建设真实模型评估集验证。本次未增加提示版本持久化或自定义提示目录。

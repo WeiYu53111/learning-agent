@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .gateway import ModelOperations, strict_json
 from .models import AppError
+from .prompt_loader import load_prompt
 
 
 def strict_schema(value):
@@ -68,7 +69,8 @@ class CodexGateway(ModelOperations):
         messages = self.messages(operation, body, schema_text)
         prompt = (
             messages[0]["content"]
-            + "\n仅处理以下数据，不调用工具、不读取文件、不运行命令。\n任务数据：\n"
+            + load_prompt("codex_data")
+            + "\n"
             + messages[1]["content"]
         )
         with tempfile.TemporaryDirectory(prefix="teach-codex-") as directory:
