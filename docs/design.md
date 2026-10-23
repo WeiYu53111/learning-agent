@@ -69,7 +69,7 @@ teach → Application → ModelBackend
 
 ## 5. CLI 契约
 
-以下命令均待实现：
+以下为早期目标设计中的接口草案，部分命令和参数已调整，不作为当前使用示例。实际支持范围与参数见[原型说明](prototype.md#6-当前命令清单)及 `teach --help`；未来工作以[计划总览](plans/README.md)为准。
 
 ```text
 teach import <path.pdf>
@@ -115,7 +115,8 @@ HTTP 密钥从 `api_key_env` 指定的环境变量读取，不写入配置快照
 ## 7. 关联规格
 
 - [领域模型与教学状态机](domain-and-policy.md)
-- [实施与验收](implementation-plan.md)
+- [计划与进展](plans/README.md)
+- [初始实施与验收（历史归档）](plans/archive/initial-implementation.md)
 - [模块详细设计索引](modules/README.md)
 
 ## 8. 详细设计与规则归属
