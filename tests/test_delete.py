@@ -136,3 +136,68 @@ def test_delete_book_reports_leftover_pdf(app, draft_id, monkeypatch):
         app.delete_book(book_id)
     assert app.store.rows("SELECT * FROM books") == []
     assert list((app.store.root / "documents").glob("*.pdf"))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_cascade_delete_complete_book_preserves_other_book(app, published, tmp_path, capsys, fail):
+    book_id = app.store.get("versions", published)["book_id"]
+    book = app.book(book_id)
+    document = app.store.root / "documents" / f"{book.sha256}.pdf"
+    session_id = app.start(published)
+    app.advance(session_id)
+    app.submit(session_id, "不知道")
+    attempt = app.store.rows("SELECT id FROM attempts")[0]["id"]
+    other = book.model_copy(update={"id": "book_other", "sha256": "a" * 64})
+    with app.store.connect() as conn:
+        conn.execute(
+            "INSERT INTO books VALUES(?,?,?)", (other.id, other.sha256, other.model_dump_json())
+        )
+        conn.execute(
+            "INSERT INTO book_indexes VALUES(?,?,?,?,?)", ("idx", book_id, "ready", "{}", "now")
+        )
+        conn.execute("INSERT INTO lesson_links VALUES(?,?,?,?)", (published, "idx", "s1", "{}"))
+        conn.execute(
+            "INSERT INTO book_questions VALUES(?,?,?,?,?)",
+            ("ask", book_id, session_id, "{}", "now"),
+        )
+        conn.execute("INSERT INTO self_mastery VALUES(?,?,?,?)", (book_id, "p", "fp", "now"))
+        conn.execute("INSERT OR IGNORE INTO attempt_context VALUES(?,?)", (attempt, "{}"))
+        conn.execute("INSERT OR IGNORE INTO answer_rounds VALUES(?,?,?)", (attempt, 1, "{}"))
+        owners = [book_id, published, session_id, attempt, "idx", "ask", other.id]
+        owners.extend(r[0] for r in conn.execute("SELECT id FROM assessments"))
+        for owner in owners:
+            app.store.event(conn, owner, "test", {})
+            conn.execute(
+                "INSERT OR REPLACE INTO backend_bindings VALUES(?,?,?)", (owner, "demo", "{}")
+            )
+            conn.execute("INSERT INTO book_steps VALUES(?,?,?)", (owner, "test", "{}"))
+        if fail:
+            conn.execute(
+                "CREATE TRIGGER reject_book_delete BEFORE DELETE ON books "
+                "BEGIN SELECT RAISE(ABORT,'test failure'); END"
+            )
+    tables = [
+        r["name"]
+        for r in app.store.rows(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    ]
+    before = {table: app.store.rows(f"SELECT * FROM {table}") for table in tables}
+    result = main(["--data-dir", str(app.store.root), "delete-book", book_id, "--cascade"])
+    if fail:
+        assert result == 1
+        assert {table: app.store.rows(f"SELECT * FROM {table}") for table in tables} == before
+        assert document.exists()
+        return
+    assert result == 0
+    assert f"已删除教材：{book_id}" in capsys.readouterr().out
+    for table in tables:
+        rows = app.store.rows(f"SELECT * FROM {table}")
+        expected = [
+            r for r in before[table] if r.get("id") == other.id or r.get("owner_id") == other.id
+        ]
+        assert rows == expected, table
+    assert app.store.rows("PRAGMA foreign_key_check") == []
+    assert not document.exists()
+    assert (tmp_path / "教材.pdf").exists()
+    assert app.import_pdf(tmp_path / "教材.pdf", demo=True).id != book_id

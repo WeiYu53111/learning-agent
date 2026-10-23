@@ -7,6 +7,8 @@
 
 ## 全书梳理、按章学习与自由提问
 
+直接运行 `teach` 或 `teach --help` 可查看中文命令导航、分组说明和快速开始步骤；运行 `teach learn --help` 等可查看具体参数及示例。
+
 ```bash
 teach import "教材.pdf"
 teach books
@@ -273,7 +275,23 @@ teach books
 teach delete-book BOOK
 ```
 
-将 `BOOK` 替换为完整教材 ID。命令永久删除教材记录和数据目录内的 PDF 副本，保留原始导入文件。教材有关联版本时拒绝删除，并列出版本 ID：先用 `teach delete VERSION` 删除未发布草稿；有已发布版本的教材不能删除。自定义目录使用 `teach --data-dir PATH delete-book BOOK`。如果记录删除后 PDF 清理失败，命令会报告残留文件路径供手动清理。
+将 `BOOK` 替换为完整教材 ID。命令永久删除教材记录和数据目录内的 PDF 副本，保留原始导入文件。默认在教材有关联版本时拒绝删除，并列出版本 ID。
+
+如果希望保留当前数据目录和其他教材，只清除这一本 PDF 的全部数据并重新开始，使用：
+
+```powershell
+teach books
+teach delete-book BOOK --cascade
+teach import "D:\教材\你的教材.pdf"
+teach books
+teach index BOOK
+teach outline BOOK
+teach learn BOOK --section SECTION
+```
+
+`--cascade` 会永久删除该教材的所有版本（包括已发布版本）、学习会话、作答及评分、全书知识结构、问答、自报掌握、检索索引、检查点和关联日志，并删除数据目录内的 PDF 副本；不可恢复。原始 PDF 和其他教材保留。重新导入后使用新的教材 ID，章节以 `outline` 输出为准。
+
+自定义目录使用 `teach --data-dir PATH delete-book BOOK --cascade`，后续命令也须指定同一目录。如果记录删除后 PDF 清理失败，命令会报告残留文件路径供手动清理。
 
 删除不再需要的未发布草稿（包括未完成提取的草稿）：
 

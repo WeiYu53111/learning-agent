@@ -135,7 +135,7 @@ class Application:
             result.append(current)
         return result
 
-    def delete_book(self, identifier):
+    def delete_book(self, identifier, cascade=False):
         with self.store.connect() as conn:
             row = conn.execute("SELECT sha256 FROM books WHERE id=?", (identifier,)).fetchone()
             if row is None:
@@ -144,11 +144,13 @@ class Application:
                 "SELECT id,status FROM versions WHERE book_id=? ORDER BY created_at,id",
                 (identifier,),
             ).fetchall()
-            if versions:
+            if versions and not cascade:
                 details = "、".join(f"{v['id']} ({v['status']})" for v in versions)
                 raise AppError(
                     f"教材仍有关联版本：{details}。"
-                    "请先用 teach delete VERSION 删除未发布草稿；有已发布版本的教材不能删除。"
+                    "请先用 teach delete VERSION 删除未发布草稿；"
+                    "如需清除该教材的全部数据（含已发布版本），"
+                    "使用 teach delete-book BOOK --cascade。"
                 )
             digest = row["sha256"]
             if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
@@ -156,6 +158,40 @@ class Application:
             document = self.store.root / "documents" / f"{digest}.pdf"
             if not document.resolve().is_relative_to(self.store.root.resolve()):
                 raise AppError("教材 PDF 路径超出数据目录，停止删除。")
+            for version in versions:
+                version_id = version["id"]
+                owners = [version_id]
+                owners.extend(
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT id FROM sessions WHERE version_id=?", (version_id,)
+                    )
+                )
+                attempts = conn.execute(
+                    "SELECT id FROM attempts WHERE version_id=?", (version_id,)
+                ).fetchall()
+                for attempt in attempts:
+                    owners.append(attempt["id"])
+                    owners.extend(
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT id FROM assessments WHERE attempt_id=?", (attempt["id"],)
+                        )
+                    )
+                    conn.execute("DELETE FROM assessments WHERE attempt_id=?", (attempt["id"],))
+                for owner in owners:
+                    conn.execute("DELETE FROM events WHERE owner_id=?", (owner,))
+                    conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (owner,))
+                    if self.library.available():
+                        conn.execute("DELETE FROM book_steps WHERE owner_id=?", (owner,))
+                # Answer context and follow-up rounds cascade from attempts.
+                conn.execute("DELETE FROM attempts WHERE version_id=?", (version_id,))
+                conn.execute("DELETE FROM sessions WHERE version_id=?", (version_id,))
+                conn.execute("DELETE FROM draft_batches WHERE version_id=?", (version_id,))
+                conn.execute("DELETE FROM preparations WHERE version_id=?", (version_id,))
+                if self.library.available():
+                    conn.execute("DELETE FROM lesson_links WHERE version_id=?", (version_id,))
+                conn.execute("DELETE FROM versions WHERE id=?", (version_id,))
             conn.execute("DELETE FROM events WHERE owner_id=?", (identifier,))
             conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (identifier,))
             if self.library.available():
@@ -171,7 +207,7 @@ class Application:
                         "SELECT id FROM book_questions WHERE book_id=?", (identifier,)
                     )
                 ]
-                for owner in index_ids + ask_ids:
+                for owner in [identifier] + index_ids + ask_ids:
                     conn.execute("DELETE FROM book_steps WHERE owner_id=?", (owner,))
                     conn.execute("DELETE FROM backend_bindings WHERE owner_id=?", (owner,))
                     conn.execute("DELETE FROM events WHERE owner_id=?", (owner,))

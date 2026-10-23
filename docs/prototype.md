@@ -151,6 +151,7 @@ HTTP 模型网关使用 `/chat/completions`，要求符合 JSON Schema 的完整
 | `clone VERSION` | 基于已有内容创建新草稿 |
 | `delete VERSION` | 永久删除未发布草稿及关联提取批次、事件和后端绑定；保留教材，拒绝删除已发布版本 |
 | `delete-book BOOK` | 永久删除无关联版本的教材及数据目录内 PDF 副本；保留原始导入文件 |
+| `delete-book BOOK --cascade` | 永久清除该教材全部数据，包含已发布版本、会话、作答、评分、知识结构及问答；保留原始 PDF 和其他教材 |
 | `export VERSION FILE` | 导出草稿 JSON；不覆盖已有文件 |
 | `apply VERSION FILE` | 将编辑后的 JSON 应用到草稿 |
 | `revise VERSION --instruction "要求"` | 输入完整草稿和原文，返回局部修改包；程序合并后完整校验 |

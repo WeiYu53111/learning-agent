@@ -12,6 +12,31 @@ from teaching_agent.models import Audit
 from teaching_agent.storage import writer_lock
 
 
+def test_command_navigation_has_no_data_side_effects(tmp_path, capsys):
+    root = tmp_path / "missing"
+    assert main(["--data-dir", str(root)]) == 0
+    output = capsys.readouterr()
+    assert "快速开始" in output.out
+    assert "teach learn BOOK --section SECTION" in output.out
+    assert "内容维护" in output.out
+    assert not output.err
+    assert not root.exists()
+
+
+def test_subcommand_help_and_invalid_arguments(capsys):
+    with pytest.raises(SystemExit) as result:
+        main(["learn", "--help"])
+    assert result.value.code == 0
+    output = capsys.readouterr().out
+    assert "teach learn" in output
+    assert "位置参数" in output
+    assert "teach outline BOOK" in output
+    assert "<命令>" not in output
+    with pytest.raises(SystemExit) as result:
+        main(["learn"])
+    assert result.value.code == 2
+
+
 def test_strict_json():
     for text in ['{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}']:
         with pytest.raises(ValueError):

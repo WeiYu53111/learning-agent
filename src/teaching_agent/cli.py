@@ -23,14 +23,110 @@ from .models import AppError, Assessment, Audit, Draft, Question
 from .progress import DraftProgress
 from .storage import Store, writer_lock
 
+COMMAND_GROUPS = (
+    (
+        "教材与学习",
+        (
+            ("import", '"教材.pdf"', "导入文本 PDF"),
+            ("books", "", "查看教材与 BOOK 编号"),
+            ("index", "BOOK", "梳理全书知识结构，可恢复"),
+            ("outline", "BOOK", "查看章节与 SECTION 编号"),
+            ("learn", "BOOK --section SECTION", "准备章节并开始学习"),
+            ("ask", 'BOOK --text "问题"', "依据教材原文自由提问"),
+            ("mastery", "BOOK --section SECTION --mark", "标记已掌握的章节"),
+            ("demo", "", "体验无需密钥的离线演示"),
+        ),
+    ),
+    (
+        "继续学习与查看进度",
+        (
+            ("sessions", "", "查看学习会话与 SESSION 编号"),
+            ("resume", "[SESSION]", "恢复学习会话"),
+            ("progress", "VERSION", "查看学习目标与掌握状态"),
+            ("start", "VERSION", "从内容版本开始学习"),
+            ("attempts", "SESSION", "查看作答与 ATTEMPT 编号"),
+            ("reassess", 'ATTEMPT --reason "理由"', "复核评分"),
+            ("answer", 'SESSION --text "回答"', "通过命令提交整题回答"),
+            ("next", "SESSION", "继续下一步教学"),
+        ),
+    ),
+    (
+        "内容准备与审核",
+        (
+            ("drafts", "", "查看内容版本与 VERSION 编号"),
+            ("prepare", "VERSION", "恢复内容准备、审核与修订"),
+            ("inspect", "VERSION", "查看内容和审核意见"),
+            ("review", "VERSION", "交互审核与确认发布"),
+            ("draft", "BOOK --section SECTION", "使用原有流程生成草稿"),
+            ("audit", "VERSION", "运行模型审核"),
+            ("revise", 'VERSION --instruction "要求"', "按要求修订内容"),
+            ("approve", "VERSION", "确认当前内容"),
+            ("publish", "VERSION", "发布已确认的内容"),
+        ),
+    ),
+    (
+        "内容维护",
+        (
+            ("source", "VERSION [CHUNK]", "查看教材原文"),
+            ("clone", "VERSION", "复制内容为新草稿"),
+            ("export", "VERSION FILE", "导出内容 JSON"),
+            ("apply", "VERSION FILE", "应用编辑后的 JSON"),
+            ("resolve", 'VERSION INDEX --note "备注"', "记录审核问题处理备注"),
+            ("delete", "VERSION", "永久删除未发布草稿"),
+            ("delete-book", "BOOK [--cascade]", "删除教材；--cascade 清除全部关联数据"),
+        ),
+    ),
+)
+
+
+class TeachParser(argparse.ArgumentParser):
+    def format_help(self):
+        lines = [
+            "teach · PDF 学习助手",
+            "导入教材，梳理全书，按章学习。",
+            "",
+            "用法：teach [全局选项] <命令> [命令参数]",
+            "",
+            "快速开始",
+            '  teach import "教材.pdf"',
+            "  teach books",
+            "  teach index BOOK",
+            "  teach outline BOOK",
+            "  teach learn BOOK --section SECTION",
+        ]
+        for title, commands in COMMAND_GROUPS:
+            lines.extend(["", title])
+            for name, _, description in commands:
+                lines.append(f"  {name:<14}  {description}")
+        lines.extend(
+            [
+                "",
+                "全局选项（放在命令之前）",
+                "  --data-dir PATH       数据目录，默认 data-v2，可由 TEACH_DATA_DIR 设置",
+                "  --config PATH         后端配置，默认查找 teach.toml",
+                "  --backend NAME        选择模型后端并更新当前任务的后端绑定",
+                "  --env-file PATH       显式读取环境变量文件",
+                "  -h, --help            显示帮助",
+                "",
+                "BOOK / SECTION / VERSION / SESSION / ATTEMPT 为占位符，请替换为实际编号。",
+                "查看命令详情：teach <命令> --help，例如 teach learn --help。",
+            ]
+        )
+        return "\n".join(lines) + "\n"
+
 
 def parser():
-    root = argparse.ArgumentParser(prog="teach", description="先审核教材，再开始教学")
-    root.add_argument("--data-dir", type=Path)
+    root = TeachParser(prog="teach", usage="teach [全局选项] <命令> [命令参数]")
+    root.add_argument("--data-dir", type=Path, help="数据目录，默认 data-v2")
     root.add_argument("--env-file", type=Path, help="显式读取 TEACH_ 配置")
     root.add_argument("--config", type=Path, help="后端配置文件，默认查找 teach.toml")
     root.add_argument("--backend", help="显式选择后端；覆盖并记录当前会话的后端选择")
-    sub = root.add_subparsers(dest="command", required=True)
+    sub = root.add_subparsers(
+        dest="command",
+        metavar="命令",
+        prog="teach",
+        parser_class=argparse.ArgumentParser,
+    )
     sub.add_parser("demo", help="创建明确标注的离线演示教材与草稿")
     command = sub.add_parser("import", help="只解析并保存 PDF，不调用模型")
     command.add_argument("path", type=Path)
@@ -55,6 +151,11 @@ def parser():
     sub.add_parser("books")
     command = sub.add_parser("delete-book", help="永久删除没有关联版本的教材及 PDF 副本")
     command.add_argument("book", metavar="BOOK")
+    command.add_argument(
+        "--cascade",
+        action="store_true",
+        help="永久清除该教材全部数据，包括已发布版本、会话、作答及评分",
+    )
     command = sub.add_parser("outline")
     command.add_argument("book")
     command = sub.add_parser("draft", help="选择章节并自动提取、审核和修订学习内容")
@@ -107,6 +208,33 @@ def parser():
     command = sub.add_parser("reassess")
     command.add_argument("attempt")
     command.add_argument("--reason", required=True)
+    for _, commands in COMMAND_GROUPS:
+        for name, arguments, description in commands:
+            command = sub.choices[name]
+            command.description = description
+            command.epilog = f"示例：teach {name} {arguments}".rstrip()
+            command._positionals.title = "位置参数"
+            command._optionals.title = "选项"
+            descriptions = {
+                "help": "显示帮助并退出",
+                "book": "教材 ID，使用 teach books 查询",
+                "version": "内容版本 ID，使用 teach drafts 查询",
+                "session": "会话 ID，使用 teach sessions 查询",
+                "attempt": "作答 ID，使用 teach attempts SESSION 查询",
+                "section": "章节 ID，使用 teach outline BOOK 查询",
+                "path": "待导入的 PDF 路径",
+                "file": "JSON 文件路径",
+                "text": "要提交的文本",
+                "instruction": "具体修改要求",
+                "reason": "评分复核理由",
+                "new": "创建新版本，不复用已有结果",
+                "no_chat": "只显示当前状态，不进入交互对话",
+            }
+            for argument in command._actions:
+                if not argument.option_strings and argument.metavar is None:
+                    argument.metavar = argument.dest.upper()
+                if argument.help is None or argument.dest == "help":
+                    argument.help = descriptions.get(argument.dest)
     return root
 
 
@@ -736,7 +864,7 @@ def dispatch(app, args):
             data = json.loads(row["data"])
             print(f"{row['id']} | {data['filename']} | {data['page_count']} 页")
     elif command == "delete-book":
-        app.delete_book(args.book)
+        app.delete_book(args.book, cascade=args.cascade)
         print(f"已删除教材：{args.book}")
     elif command == "outline":
         for section in app.book(args.book).sections:
@@ -918,7 +1046,11 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    args = parser().parse_args(argv)
+    root = parser()
+    args = root.parse_args(argv)
+    if args.command is None:
+        root.print_help()
+        return 0
     if args.env_file:
         if not args.env_file.is_file():
             print("配置文件不存在。", file=sys.stderr)
