@@ -430,3 +430,153 @@ def test_chat_question_inherits_session_backend_snapshot(app, published):
     record = app.library.ask(book.id, "原理", session_id=session)
     assert record["backend"] == [{"name": "remembered", "spec": '{"type":"demo"}'}]
     assert app.session(session) == before
+
+
+def test_relation_candidates_are_bounded_and_find_cross_chapter_terms():
+    from teaching_agent.book_learning import tokens
+    from teaching_agent.relation_planner import candidate_pairs, relation_batches
+
+    points = [
+        dict(key=f"k{i}", title=f"主题 {i}", description="共同内容", section_id=f"s{i // 10}")
+        for i in range(100)
+    ]
+    points[0]["description"] = points[99]["description"] = "独特缓存前缀复用"
+    pairs = candidate_pairs(points, tokens)
+    assert (0, 99) in pairs
+    assert (0, 1) in pairs
+    assert len(pairs) <= 7 * len(points)
+    assert len(pairs) == len(set(pairs))
+    assert pairs == candidate_pairs(points, tokens)
+    batches = relation_batches(points, pairs)
+    assert all(len(b["candidate_pairs"]) <= 32 for b in batches)
+    assert all(len(dumps(b)) <= 12000 for b in batches)
+    assert sum(len(b["candidate_pairs"]) for b in batches) == len(pairs)
+    assert candidate_pairs([], tokens) == []
+    assert candidate_pairs(points[:1], tokens) == []
+
+
+@pytest.mark.parametrize("with_edge", [True, False])
+def test_index_reuses_legacy_relation_results_including_empty(app, book_id, with_edge):
+    index = app.library.index(book_id)
+    points = json.loads(index["data"])["points"]
+    edges = (
+        [dict(source=points[0]["key"], target=points[1]["key"], kind="related", reason="已有分析")]
+        if with_edge
+        else []
+    )
+    with app.store.connect() as conn:
+        conn.execute("UPDATE book_indexes SET status='building' WHERE id=?", (index["id"],))
+        conn.execute(
+            "DELETE FROM book_steps WHERE owner_id=? AND step LIKE 'relations_v2:%'", (index["id"],)
+        )
+    app.library.save_step(index["id"], "relations:0:0", {"relations": edges})
+    app.injected_gateway.book_operation = lambda *args: pytest.fail("不应再次调用模型")
+    restored = app.library.index(book_id)
+    assert json.loads(restored["data"])["relations"] == edges
+    plan = app.library.step(index["id"], "relations_v2:plan")
+    assert plan["batches"] == []
+    assert plan["legacy_steps"] == 1
+
+
+def test_relation_batches_resume_without_repeating_saved_requests(app, book_id, monkeypatch):
+    import teaching_agent.book_learning as learning
+    from teaching_agent.relation_planner import relation_batches
+
+    monkeypatch.setattr(
+        learning,
+        "relation_batches",
+        lambda points, pairs: relation_batches(points, pairs, pair_limit=1),
+    )
+    original = app.injected_gateway.book_operation
+    calls = []
+    failed = False
+
+    def operation(op, payload, contract):
+        nonlocal failed
+        if op == "book_relations":
+            calls.append(copy.deepcopy(payload))
+            if len(calls) == 2 and not failed:
+                failed = True
+                raise AppError("网络超时")
+        return original(op, payload, contract)
+
+    app.injected_gateway.book_operation = operation
+    with pytest.raises(AppError, match="暂停"):
+        app.library.index(book_id)
+    first = calls[0]["candidate_pairs"]
+    app.library.index(book_id)
+    assert sum(c["candidate_pairs"] == first for c in calls) == 1
+    assert calls[1]["candidate_pairs"] == calls[2]["candidate_pairs"]
+
+
+def test_relation_validation_rejects_edges_outside_candidates(app, book_id, monkeypatch):
+    import teaching_agent.book_learning as learning
+
+    monkeypatch.setattr(learning, "candidate_pairs", lambda *args: [(0, 1), (1, 2)])
+    original = app.injected_gateway.book_operation
+    attempts = []
+
+    def operation(op, payload, contract):
+        if op == "book_relations":
+            attempts.append(payload)
+            points = payload["points"]
+            return contract.model_validate(
+                {
+                    "relations": [
+                        dict(
+                            source=points[0]["key"],
+                            target=points[2]["key"],
+                            kind="related",
+                            reason="不在候选范围内",
+                        )
+                    ]
+                }
+            )
+        return original(op, payload, contract)
+
+    app.injected_gateway.book_operation = operation
+    with pytest.raises(AppError, match="candidate_pairs"):
+        app.library.index(book_id)
+    assert len(attempts) == 2
+    assert not app.library.active(book_id)
+
+
+def test_relation_validation_checks_cycles_across_batches(app, book_id, monkeypatch):
+    import teaching_agent.book_learning as learning
+    from teaching_agent.relation_planner import relation_batches
+
+    monkeypatch.setattr(learning, "candidate_pairs", lambda *args: [(0, 1), (1, 2), (0, 2)])
+    monkeypatch.setattr(
+        learning,
+        "relation_batches",
+        lambda points, pairs: relation_batches(points, pairs, pair_limit=1),
+    )
+    original = app.injected_gateway.book_operation
+    calls = []
+
+    def operation(op, payload, contract):
+        if op != "book_relations":
+            return original(op, payload, contract)
+        calls.append(payload)
+        source, target = payload["candidate_pairs"][0]
+        if len(calls) >= 3:
+            source, target = target, source
+        return contract.model_validate(
+            {
+                "relations": [
+                    dict(source=source, target=target, kind="prerequisite", reason="测试前置关系")
+                ]
+            }
+        )
+
+    app.injected_gateway.book_operation = operation
+    with pytest.raises(AppError, match="循环"):
+        app.library.index(book_id)
+    assert not app.library.active(book_id)
+    assert len(calls) == 4  # third batch is corrected once, then paused
+    rows = app.store.rows("SELECT step FROM book_steps WHERE step LIKE 'relations_v2:batch:%'")
+    assert {r["step"] for r in rows} == {
+        "relations_v2:batch:0",
+        "relations_v2:batch:1",
+        "relations_v2:batch:2:rejected",
+    }

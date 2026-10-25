@@ -21,6 +21,7 @@ from .book_models import (
 )
 from .knowledge import check_refs, quality_report
 from .models import AppError, Draft
+from .relation_planner import candidate_pairs, relation_batches
 from .storage import dumps, now, uid
 
 
@@ -295,31 +296,76 @@ class BookLearning:
                     break
                 units = results
                 level += 1
-        # Bounded pairs give cross-chapter nodes a chance to be linked, without a giant request.
-        partitions = list(groups([self.brief(p) for p in points], 6000))
-        relations = []
-        for i, left in enumerate(partitions):
-            for j in range(i, len(partitions)):
-                subset = left if i == j else left + partitions[j]
-                keys = {p["key"] for p in subset}
+        plan_key = "relations_v2:plan"
+        plan = self.step(owner, plan_key)
+        all_keys = {p["key"] for p in points}
+        if plan is None:
+            briefs = [self.brief(p) for p in points]
+            # Reconstruct the old grouping to reuse both positive and empty results.
+            partitions = list(groups(briefs, 6000))
+            partition_of = {p["key"]: i for i, batch in enumerate(partitions) for p in batch}
+            covered, legacy = set(), []
+            rows = self.store.rows("SELECT step,data FROM book_steps WHERE owner_id=?", (owner,))
+            for row in sorted(rows, key=lambda r: r["step"]):
+                match = re.fullmatch(r"relations:(\d+):(\d+)", row["step"])
+                if not match:
+                    continue
+                i, j = map(int, match.groups())
+                if not (0 <= i <= j < len(partitions)):
+                    raise AppError("旧关系检查点与知识点分组不一致。")
+                edges = Relations.model_validate_json(row["data"])
+                legacy.extend(e.model_dump() for e in edges.relations)
+                covered.add((i, j))
+            errors = relation_errors(legacy, all_keys)
+            if errors:
+                raise AppError("旧关系检查点校验失败：" + "；".join(errors))
+            candidates = candidate_pairs(briefs, tokens)
+            remaining = [
+                (i, j)
+                for i, j in candidates
+                if tuple(sorted((partition_of[briefs[i]["key"]], partition_of[briefs[j]["key"]])))
+                not in covered
+            ]
+            plan = {
+                "batches": relation_batches(briefs, remaining),
+                "legacy": legacy,
+                "candidate_count": len(candidates),
+                "reused_pairs": len(candidates) - len(remaining),
+                "legacy_steps": len(covered),
+            }
+            self.save_step(owner, plan_key, plan)
+        relations = list(plan["legacy"])
+        batches = plan["batches"]
+        emit(
+            f"关系候选：{plan['candidate_count']} 对；复用旧分析 {plan['legacy_steps']} 批"
+            f"（覆盖 {plan['reused_pairs']} 对候选）；计划验证 {len(batches)} 批。"
+        )
+        for i, payload in enumerate(batches):
+            allowed = {frozenset(pair) for pair in payload["candidate_pairs"]}
+            keys = {p["key"] for p in payload["points"]}
 
-                def validate(value, keys=keys):
-                    edges = [e.model_dump() for e in value.relations]
-                    return relation_errors(edges, keys) + relation_errors(
-                        relations + edges, {p["key"] for p in points}
-                    )
+            def validate(value, keys=keys, allowed=allowed):
+                edges = [e.model_dump() for e in value.relations]
+                errors = relation_errors(edges, keys) + relation_errors(relations + edges, all_keys)
+                if any(frozenset((e["source"], e["target"])) not in allowed for e in edges):
+                    errors.append("只能返回 candidate_pairs 指定的候选知识点对之间的关系。")
+                return errors
 
-                result = self.call(
-                    book,
-                    owner,
-                    f"relations:{i}:{j}",
-                    "book_relations",
-                    {"points": subset},
-                    Relations,
-                    validate,
-                    emit,
-                )
-                relations.extend(e.model_dump() for e in result.relations)
+            emit(f"关系验证 {i + 1}/{len(batches)}：{len(allowed)} 对候选")
+            result = self.call(
+                book,
+                owner,
+                f"relations_v2:batch:{i}",
+                "book_relations",
+                payload,
+                Relations,
+                validate,
+                emit,
+            )
+            errors = validate(result)
+            if errors:
+                raise AppError("关系检查点校验失败：" + "；".join(errors))
+            relations.extend(e.model_dump() for e in result.relations)
         unique = {(e["source"], e["target"], e["kind"]): e for e in relations}
         data = {
             "points": points,

@@ -161,6 +161,23 @@ class Store:
             raise AppError("暂无数据。请先运行 teach demo 或 teach import。")
         target = self.path.as_uri() + "?mode=ro" if readonly else str(self.path)
         conn = sqlite3.connect(target, uri=readonly, timeout=5)
+        if readonly:
+            try:
+                # Some SQLite builds cannot open a WAL database read-only when
+                # its sidecar files have been removed after the last close.
+                conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            except sqlite3.Error as exc:
+                conn.close()
+                if getattr(exc, "sqlite_errorcode", 0) & 0xFF != sqlite3.SQLITE_CANTOPEN:
+                    raise
+                # Allow SQLite to manage sidecars without creating a database
+                # or permitting application SQL to change persisted data.
+                conn = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True, timeout=5)
+            try:
+                conn.execute("PRAGMA query_only=ON")
+            except BaseException:
+                conn.close()
+                raise
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         try:

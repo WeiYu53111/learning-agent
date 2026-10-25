@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import sqlite3
 import subprocess
 import sys
 
@@ -39,6 +41,32 @@ def test_gateway_http_contract_and_repair(monkeypatch):
 def test_readonly_requires_no_key(tmp_path, capsys):
     assert main(["--data-dir", str(tmp_path / "missing"), "books"]) == 1
     assert "暂无数据" in capsys.readouterr().err
+
+
+def test_books_from_wal_database_without_sidecars(tmp_path, capsys):
+    from teaching_agent.storage import Store
+
+    source = tmp_path / "source.db"
+    with sqlite3.connect(source) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE books(id TEXT, data TEXT)")
+        conn.execute("INSERT INTO books VALUES (?, ?)", (
+            "book_saved", json.dumps({"filename": "saved.pdf", "page_count": 12})
+        ))
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    root = tmp_path / "copied"
+    root.mkdir()
+    shutil.copyfile(source, root / "learning.db")
+    assert not (root / "learning.db-wal").exists()
+    assert main(["--data-dir", str(root), "books"]) == 0
+    assert "book_saved | saved.pdf | 12 页" in capsys.readouterr().out
+    store = Store(root)
+    with store.connect(readonly=True) as reader:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            reader.execute("DELETE FROM books")
+    assert len(store.rows("SELECT * FROM books")) == 1
 
 
 def test_demo_and_piped_review(tmp_path, monkeypatch, capsys):
