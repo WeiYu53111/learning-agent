@@ -29,6 +29,7 @@ COMMAND_GROUPS = (
         (
             ("import", '"教材.pdf"', "导入文本 PDF"),
             ("books", "", "查看教材与 BOOK 编号"),
+            ("web", "[--port 8765]", "打开本地内容与关联知识查看服务"),
             ("index", "BOOK", "梳理全书知识结构，可恢复"),
             ("outline", "BOOK", "查看章节与 SECTION 编号"),
             ("learn", "BOOK --section SECTION", "准备章节并开始学习"),
@@ -128,6 +129,8 @@ def parser():
         parser_class=argparse.ArgumentParser,
     )
     sub.add_parser("demo", help="创建明确标注的离线演示教材与草稿")
+    command = sub.add_parser("web", help="启动本地只读 Web，Ctrl+C 退出")
+    command.add_argument("--port", type=int, default=8765)
     command = sub.add_parser("import", help="只解析并保存 PDF，不调用模型")
     command.add_argument("path", type=Path)
     command = sub.add_parser("index", help="梳理全书知识结构，可恢复")
@@ -1057,6 +1060,18 @@ def main(argv=None):
             return 2
         load_dotenv(args.env_file, override=False)
     store = Store(args.data_dir or Path(os.getenv("TEACH_DATA_DIR", "data-v2")))
+    if args.command == "web":
+        try:
+            from .web import serve
+
+            serve(store, args.port)
+            return 0
+        except ImportError:
+            print('请先安装 Web 依赖：python -m pip install -e ".[web]"', file=sys.stderr)
+            return 1
+        except (AppError, OSError) as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            return 1
     app = Application(store, backends=BackendRegistry(args.config, args.backend))
     readonly = {
         "books",

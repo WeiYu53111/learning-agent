@@ -225,3 +225,8 @@ __marimo__/
 # Local application state
 data/
 data-v2/
+node_modules/
+src/teaching_agent/web_static/
+web/playwright-report/
+web/test-results/
+web/*.tsbuildinfo
