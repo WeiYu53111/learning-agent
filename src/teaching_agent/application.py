@@ -468,6 +468,12 @@ class Application:
                         "INSERT INTO lesson_links VALUES(?,?,?,?)",
                         (new_id, link["index_id"], link["section_id"], link["data"]),
                     )
+                    conn.execute(
+                        "INSERT INTO lesson_relation_snapshots "
+                        "SELECT ?,index_id,graph_revision,data FROM lesson_relation_snapshots "
+                        "WHERE version_id=?",
+                        (new_id, identifier),
+                    )
         return new_id
 
     def audit(self, identifier, progress=None, preparation=None):

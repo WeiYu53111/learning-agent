@@ -210,3 +210,7 @@ class EvidenceAssessment(Assessment):
 
 class AppError(Exception):
     """Safe to render; never wrap raw provider bodies in this error."""
+
+
+class ModelResponseError(AppError):
+    """A response arrived but cannot be interpreted; scheduler may correct it once."""

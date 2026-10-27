@@ -153,8 +153,10 @@ def add_prerequisite(app, book_id):
             "reason": "先理解上下文",
         }
     ]
+    from teaching_agent.relations import RelationAnalysis
+
     with app.store.connect() as conn:
-        conn.execute("UPDATE book_indexes SET data=? WHERE id=?", (dumps(data), index["id"]))
+        RelationAnalysis(app.library, index).save_graph(conn, [(None, data["relations"])])
     return data["points"][0]["key"]
 
 
@@ -287,7 +289,7 @@ def test_migration_is_idempotent_preserves_old_records(app, draft_id):
     app.store.initialize()
     app.store.initialize()
     assert app.version(draft_id)[0] == before
-    assert app.store.rows("PRAGMA user_version")[0]["user_version"] == 5
+    assert app.store.rows("PRAGMA user_version")[0]["user_version"] == 6
 
 
 def test_all_structure_batches_finish_before_questions(app, book_id, monkeypatch):
@@ -472,7 +474,7 @@ def test_index_does_not_reuse_legacy_relation_results(app, book_id, with_edge):
     app.library.save_step(index["id"], "relations:0:0", {"relations": edges})
     restored = app.library.index(book_id)
     assert json.loads(restored["data"])["relations"] == []
-    assert app.library.step(index["id"], "relations_v2:plan")["candidate_count"] > 0
+    assert app.store.rows("SELECT * FROM relation_task_pairs")
 
 
 def test_relation_batches_resume_without_repeating_saved_requests(app, book_id, monkeypatch):
@@ -517,22 +519,16 @@ def test_relation_validation_rejects_edges_outside_candidates(app, book_id, monk
         if op == "book_relations":
             attempts.append(payload)
             points = payload["points"]
-            return contract.model_validate(
-                {
-                    "relations": [
-                        dict(
-                            source=points[0]["key"],
-                            target=points[2]["key"],
-                            kind="related",
-                            reason="不在候选范围内",
-                        )
-                    ]
-                }
-            )
+            return contract.model_validate({"checks": [
+                dict(pair_id=pair["pair_id"], relations=[dict(
+                    source=points[0]["key"], target=points[2]["key"],
+                    kind="related", reason="不在候选范围内",
+                )]) for pair in payload["pairs"]
+            ]})
         return original(op, payload, contract)
 
     app.injected_gateway.book_operation = operation
-    with pytest.raises(AppError, match="candidate_pairs"):
+    with pytest.raises(AppError, match="配对"):
         app.library.index(book_id)
     assert len(attempts) == 2
     assert not app.library.active(book_id)
@@ -556,24 +552,21 @@ def test_relation_validation_checks_cycles_across_batches(app, book_id, monkeypa
             return original(op, payload, contract)
         calls.append(payload)
         source, target = payload["candidate_pairs"][0]
-        if len(calls) >= 3:
+        sections = {p["key"]: p["section_id"] for p in payload["points"]}
+        source, target = sorted((source, target), key=lambda k: sections[k])
+        if {sections[source], sections[target]} == {"s1", "s3"}:
             source, target = target, source
-        return contract.model_validate(
-            {
-                "relations": [
-                    dict(source=source, target=target, kind="prerequisite", reason="测试前置关系")
-                ]
-            }
-        )
+        return contract.model_validate({"checks": [dict(
+            pair_id=payload["pairs"][0]["pair_id"], relations=[dict(
+                source=source, target=target, kind="prerequisite", reason="测试前置关系"
+            )],
+        )]})
 
     app.injected_gateway.book_operation = operation
     with pytest.raises(AppError, match="循环"):
         app.library.index(book_id)
     assert not app.library.active(book_id)
     assert len(calls) == 4  # third batch is corrected once, then paused
-    rows = app.store.rows("SELECT step FROM book_steps WHERE step LIKE 'relations_v2:batch:%'")
-    assert {r["step"] for r in rows} == {
-        "relations_v2:batch:0",
-        "relations_v2:batch:1",
-        "relations_v2:batch:2:rejected",
-    }
+    assert len(app.store.rows("SELECT * FROM relation_checks")) == 2
+    requests = app.store.rows("SELECT status FROM relation_requests")
+    assert [r["status"] for r in requests].count("failed") == 2

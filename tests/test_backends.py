@@ -146,7 +146,7 @@ def test_v1_migration_retains_data(tmp_path):
     store.initialize()
     store.initialize()
     assert store.get("books", "b")["sha256"] == "hash"
-    assert store.rows("PRAGMA user_version")[0]["user_version"] == 5
+    assert store.rows("PRAGMA user_version")[0]["user_version"] == 6
     assert store.rows("SELECT * FROM preparations") == []
     assert store.rows("SELECT * FROM backend_bindings") == []
 

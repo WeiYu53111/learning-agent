@@ -18,6 +18,7 @@ export type Index = {
   created_at: string;
   status: "ready" | "building";
   pipeline?: string | null;
+  indexed_sections?: string[];
 };
 export type Point = {
   key: string;

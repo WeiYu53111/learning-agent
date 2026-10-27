@@ -18,6 +18,7 @@ from .models import (
     Draft,
     DraftPatch,
     EvidenceAssessment,
+    ModelResponseError,
     Task,
 )
 from .prompt_loader import load_prompt
@@ -226,12 +227,16 @@ class Gateway(ModelOperations):
                     value = strict_json(choice["message"]["content"])
                     return contract.model_validate(value)
                 except httpx.TransportError:
+                    if operation == "book_relations":
+                        break  # Relation scheduler owns every retry and its budget.
                     network_retries += 1
                     if network_retries > 2 or request_index == 3:
                         break
                     delay = min(2**network_retries, max(0, end - time.monotonic()))
                     time.sleep(delay)
-                except (ValueError, KeyError, IndexError, TypeError, ValidationError):
+                except (ValueError, KeyError, IndexError, TypeError, ValidationError) as exc:
+                    if operation == "book_relations":
+                        raise ModelResponseError("模型返回不符合逐对响应契约的内容。") from exc
                     if repaired:
                         raise AppError("模型连续返回不符合契约的内容，原数据未覆盖。") from None
                     repaired = True

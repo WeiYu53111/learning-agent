@@ -356,8 +356,11 @@ export default function App() {
                 {catalog.data?.indexes.map((i) => (
                   <option key={i.id} value={i.id}>
                     {i.pipeline !== "semantic-v1" ? "历史旧版 · " : ""}
-                    {i.status === "ready" ? "内容就绪" : "提取中"} ·{" "}
-                    {new Date(i.created_at).toLocaleString("zh-CN")} ·{" "}
+                    {i.status === "ready" ? "内容就绪" : "提取中"}
+                    {i.indexed_sections?.length
+                      ? `（${i.indexed_sections.length}/${catalog.data?.sections.length} 章）`
+                      : ""}{" "}
+                    · {new Date(i.created_at).toLocaleString("zh-CN")} ·{" "}
                     {i.id.slice(-6)}
                   </option>
                 ))}
@@ -440,6 +443,12 @@ export default function App() {
                     旧版知识结构，仅供历史查看；新学习请重新提取。
                   </p>
                 )}
+                {chapter.data.index?.indexed_sections?.length && (
+                  <p className="muted">
+                    已审核章节：{chapter.data.index.indexed_sections.join("、")}
+                    ；未列出的章节尚未索引。学习时仅分析当前及前序章节。
+                  </p>
+                )}
                 {chapter.data.quality === "pending" && index && (
                   <p className="notice">
                     本章正在准备或审核，仅展示已完成章节审核的知识点。
@@ -481,8 +490,14 @@ export default function App() {
                   {chapter.data.coverage.map((c) => (
                     <div key={c.task_id}>
                       <strong>
-                        {c.section_id ? "当前章节" : "全书候选"} ·{" "}
-                        {statuses[c.status] ?? c.status}
+                        {c.section_id?.startsWith("@through:")
+                          ? "截至目标章的候选"
+                          : c.section_id?.startsWith("@rebuild:")
+                            ? "章节重建候选"
+                            : c.section_id
+                              ? "当前章节"
+                              : "全书候选"}{" "}
+                        · {statuses[c.status] ?? c.status}
                       </strong>
                       <p>
                         已检查 {c.checked}/{c.total} 对 · 有关系{" "}

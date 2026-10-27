@@ -37,6 +37,7 @@ class IndexInfo(BaseModel):
     created_at: str
     status: Literal["ready", "building"]
     pipeline: str | None = None
+    indexed_sections: list[str] = []
 
 
 class Catalog(BaseModel):
@@ -139,6 +140,9 @@ class Reader:
                     **r,
                     "status": states.get(r["id"], r["status"]),
                     "pipeline": json.loads(r["data"]).get("pipeline"),
+                    "indexed_sections": json.loads(r["data"]).get(
+                        "indexed_sections", list(json.loads(r["data"]).get("summaries", {}))
+                    ),
                 }
             )
             for r in rows
@@ -165,7 +169,17 @@ class Reader:
             if "book_steps" in self.tables
             else []
         )
-        if selected.status == "ready":
+        if (
+            selected.status == "ready"
+            or data.get("indexed_sections")
+            or (
+                "index_content_state" in self.tables
+                and self.rows(
+                    "SELECT 1 FROM index_content_state WHERE index_id=? AND status='ready'",
+                    (selected.id,),
+                )
+            )
+        ):
             return selected, data, steps
         if selected.pipeline == PIPELINE:
             metadata = data
@@ -240,8 +254,8 @@ class Reader:
         pairs = self.pairs(index_id)
         result = []
         for task in self.rows(
-            "SELECT * FROM relation_tasks WHERE index_id=? AND section_id IN ('',?)",
-            (index_id, section_id),
+            "SELECT * FROM relation_tasks WHERE index_id=? AND section_id IN ('',?,?,?)",
+            (index_id, section_id, "@rebuild:" + section_id, "@through:" + section_id),
         ):
             members = [p for p in pairs if p["task_id"] == task["id"]]
             checked = [p for p in members if p["result"] is not None]
@@ -362,7 +376,7 @@ def create_app(store: Store, static_dir: Path = STATIC):
                     else "reviewed"
                     if selected
                     and (
-                        selected.status == "ready"
+                        (selected.status == "ready" and section_id in data.get("summaries", {}))
                         or section_id in data.get("reviewed_sections", [])
                         or any(s["step"] == f"{section_id}:{PIPELINE}:complete" for s in steps)
                     )

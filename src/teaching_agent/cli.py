@@ -21,6 +21,7 @@ from .knowledge import quality_report
 from .learner import outcome, score
 from .models import AppError, Assessment, Audit, Draft, Question
 from .progress import DraftProgress
+from .relations import RelationsPaused
 from .storage import Store, writer_lock
 
 COMMAND_GROUPS = (
@@ -31,6 +32,7 @@ COMMAND_GROUPS = (
             ("books", "", "查看教材与 BOOK 编号"),
             ("web", "[--port 8765]", "打开本地内容与关联知识查看服务"),
             ("index", "BOOK", "梳理全书知识结构，可恢复"),
+            ("relations", "BOOK [--section SECTION]", "补充关系分析，可设置调用与深度预算"),
             ("outline", "BOOK", "查看章节与 SECTION 编号"),
             ("learn", "BOOK --section SECTION", "准备章节并开始学习"),
             ("ask", 'BOOK --text "问题"', "依据教材原文自由提问"),
@@ -136,11 +138,18 @@ def parser():
     command = sub.add_parser("index", help="梳理全书知识结构，可恢复")
     command.add_argument("book")
     command.add_argument("--new", action="store_true", help="创建新的知识结构版本")
-    command.add_argument("--section", help="只重建指定章节；省略则处理全书")
+    command.add_argument("--section", help="补齐从开头到指定章节；--new 重建目标章；省略则处理全书")
+    command.add_argument("--content-only", action="store_true", help="内容就绪即结束")
+    command = sub.add_parser("relations", help="补齐全书或章节候选关系，可恢复")
+    command.add_argument("book")
+    command.add_argument("--section")
+    command.add_argument("--max-calls", type=int, help="本轮调用上限；章节默认 4，全书不限")
+    command.add_argument("--max-depth", type=int, default=2, help="外章前置展开深度，默认 2")
     command = sub.add_parser("learn", help="按章两阶段准备并开始学习")
     command.add_argument("book")
     command.add_argument("--section", required=True)
     command.add_argument("--new", action="store_true")
+    command.add_argument("--allow-partial-relations", action="store_true")
     command = sub.add_parser("ask", help="仅依据当前教材原文回答")
     command.add_argument("book")
     command.add_argument("--text", required=True)
@@ -300,6 +309,7 @@ def list_drafts(app):
 def inspect(app, identifier):
     row, book, chunks = app.version(identifier)
     print(f"\n版本 {identifier} | {row['status']} | 修订 {row['revision']} | {book.filename}")
+    print_relation_snapshot(app, identifier)
     if book.demo:
         print("[离线演示] 固定教材/场景，关键词评分；不代表真实模型效果。")
     if row["data"] == "{}":
@@ -356,6 +366,23 @@ MASTERY_LABELS = {
     "needs_remediation": "待补练",
     "unknown": "未验证",
 }
+
+
+def print_relation_snapshot(app, identifier):
+    if not app.store.rows("SELECT name FROM sqlite_master WHERE name='lesson_relation_snapshots'"):
+        return
+    rows = app.store.rows(
+        "SELECT * FROM lesson_relation_snapshots WHERE version_id=?", (identifier,)
+    )
+    if rows:
+        row = rows[0]
+        data = json.loads(row["data"])
+        coverage = data["coverage"]
+        label = "历史覆盖未知" if coverage["status"] == "legacy_unknown" else coverage["status"]
+        print(
+            f"固定关系快照：{row['index_id']} · 图修订 {row['graph_revision']} · {label}"
+            + (" · 已接受部分覆盖" if data.get("allow_partial") else "")
+        )
 
 
 def print_progress(app, identifier):
@@ -778,7 +805,7 @@ def prerequisite_choices(app, version):
     if not links:
         return []
     link = links[0]
-    index = app.store.rows("SELECT * FROM book_indexes WHERE id=?", (link["index_id"],))[0]
+    index = app.library.lesson_index(version)
     book_id = index["book_id"]
     needed = app.library.prerequisites(book_id, link["section_id"], index)
     skipped = []
@@ -796,6 +823,17 @@ def prerequisite_choices(app, version):
             print(f"完成后返回：teach start {version}")
             return None
     return skipped
+
+
+def choose_partial_relations(coverage):
+    print(
+        f"关系尚未完整：已检查 {coverage['checked']}/{coverage['total']} 对；"
+        f"未展开前置 {coverage['unexpanded']}。"
+    )
+    if coverage.get("last_error"):
+        print(f"最近失败：{coverage['last_error']}")
+    choice = input("1 继续分析（深度受限时增加一层） / 2 按当前已知关系学习 / 3 退出 [3]：").strip()
+    return {"1": "continue", "2": "partial"}.get(choice, "exit")
 
 
 def dispatch(app, args):
@@ -819,11 +857,28 @@ def dispatch(app, args):
         print(f"下一步：teach index {book.id}；或直接 teach ask {book.id} --text '问题'")
     elif command == "index":
         with DraftProgress() as progress:
-            result = app.library.index(args.book, progress, new=args.new, section_id=args.section)
+            result = app.library.index(
+                args.book, progress, new=args.new, section_id=args.section,
+                content_only=args.content_only,
+            )
         print(f"知识结构：{result['id']}；查看：teach outline {args.book}")
+    elif command == "relations":
+        with DraftProgress() as progress:
+            coverage = app.library.relations(
+                args.book, args.section, args.max_calls, args.max_depth, progress
+            )
+        if coverage["status"] != "candidate_complete":
+            raise RelationsPaused("关系分析已暂停，进度已保存；重复命令或增加预算可继续。")
     elif command == "learn":
         with DraftProgress() as progress:
-            identifier = app.library.learn(args.book, args.section, progress, new=args.new)
+            identifier = app.library.learn(
+                args.book,
+                args.section,
+                progress,
+                new=args.new,
+                allow_partial_relations=args.allow_partial_relations,
+                choose_partial=choose_partial_relations if sys.stdin.isatty() else None,
+            )
         print(f"教学版本：{identifier}；恢复：teach prepare {identifier}")
         if app.version(identifier)[0]["status"] == "published":
             existing = [
@@ -843,7 +898,7 @@ def dispatch(app, args):
             record = app.library.ask(args.book, args.text, progress)
         print_book_answer(record)
     elif command == "mastery":
-        index = app.library.active(args.book)
+        index = app.library.content_active(args.book)
         if not index:
             raise AppError("请先完成 teach index BOOK。")
         points = [
@@ -874,7 +929,7 @@ def dispatch(app, args):
         for section in app.book(args.book).sections:
             print(f"{section.id} p.{section.start_page}–{section.end_page} {section.title}")
         if app.library.available():
-            index = app.library.active(args.book)
+            index = app.library.content_active(args.book)
             pending = app.store.rows(
                 "SELECT id FROM book_indexes WHERE book_id=? AND status='building'", (args.book,)
             )
@@ -884,6 +939,29 @@ def dispatch(app, args):
                 + ("；有未完成任务，可运行 index 恢复" if pending else "")
             )
             if index:
+                print(f"内容就绪：{index['id']}")
+                if app.store.rows("SELECT name FROM sqlite_master WHERE name='relation_tasks'"):
+                    from .relations import RelationAnalysis
+
+                    analysis = RelationAnalysis(app.library, index)
+                    tasks = app.store.rows(
+                        "SELECT * FROM relation_tasks WHERE index_id=?", (index["id"],)
+                    )
+                    if not tasks:
+                        print("关系覆盖：not_started（历史覆盖如有，仅属于旧策略）")
+                    if not any(not task["section_id"] for task in tasks):
+                        print("全书候选覆盖：not_started")
+                    for task in tasks:
+                        coverage = analysis.coverage(task)
+                        print(
+                            f"  {task['section_id'] or '全书'}：{coverage['status']}；"
+                            f"已检查 {coverage['checked']}/{coverage['total']} 对；"
+                            f"有关系 {coverage['with_relations']}，"
+                            f"未建立关系 {coverage['without_relations']}；"
+                            f"未展开前置 {coverage['unexpanded']}"
+                        )
+                        if coverage["last_error"]:
+                            print(f"  最近失败：{coverage['last_error']}")
                 marks = app.library.marks(args.book, index)
                 verified = app.library.verified(args.book, index)
                 data = json.loads(index["data"])
@@ -951,6 +1029,7 @@ def dispatch(app, args):
         with args.file.open("x", encoding="utf-8") as target:
             json.dump(json.loads(row["data"]), target, ensure_ascii=False, indent=2)
         print(f"已导出：{args.file}。apply 后须重新审核。")
+        print_relation_snapshot(app, args.version)
     elif command == "apply":
         draft = Draft.model_validate_json(args.file.read_text(encoding="utf-8-sig"))
         app.save_draft(args.version, draft, "人工JSON编辑")
@@ -1096,6 +1175,9 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("\n操作已中断，已提交的数据可恢复。", file=sys.stderr)
         return 130
+    except RelationsPaused as exc:
+        print(f"暂停：{exc}", file=sys.stderr)
+        return 3
     except (AppError, ValidationError, ValueError, OSError, sqlite3.Error) as exc:
         print(f"错误：{safe_error(exc)}", file=sys.stderr)
         return 1

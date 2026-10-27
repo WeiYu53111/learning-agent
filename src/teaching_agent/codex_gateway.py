@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from .gateway import ModelOperations, strict_json
-from .models import AppError
+from .models import AppError, ModelResponseError
 from .prompt_loader import load_prompt
 
 
@@ -67,12 +67,7 @@ class CodexGateway(ModelOperations):
                 "并用 --backend 显式选择该后端以应用新配置；或缩小教材范围。"
             )
         messages = self.messages(operation, body, schema_text)
-        prompt = (
-            messages[0]["content"]
-            + load_prompt("codex_data")
-            + "\n"
-            + messages[1]["content"]
-        )
+        prompt = messages[0]["content"] + load_prompt("codex_data") + "\n" + messages[1]["content"]
         with tempfile.TemporaryDirectory(prefix="teach-codex-") as directory:
             root = Path(directory)
             status = self.run([executable, "login", "status"], cwd=root, timeout=15)
@@ -113,4 +108,6 @@ class CodexGateway(ModelOperations):
             try:
                 return contract.model_validate(strict_json(output_path.read_text(encoding="utf-8")))
             except (ValueError, TypeError) as exc:
-                raise AppError("Codex 返回内容不符合数据契约，已保存的数据未覆盖。") from exc
+                raise ModelResponseError(
+                    "Codex 返回内容不符合数据契约，已保存的数据未覆盖。"
+                ) from exc

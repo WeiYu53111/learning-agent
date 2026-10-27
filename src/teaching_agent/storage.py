@@ -97,7 +97,7 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5):
+            if version not in (0, 1, 2, 3, 4, 5, 6):
                 raise AppError("数据库版本不兼容，请使用新的数据目录。")
             if version == 0:
                 conn.executescript(SCHEMA)
@@ -151,6 +151,13 @@ class Store:
                 ):
                     conn.execute(statement)
                 conn.execute("PRAGMA user_version=5")
+            if version < 6:
+                from .relation_schema import migrate
+
+                # DDL and migration markers must roll back together.
+                if not conn.in_transaction:
+                    conn.execute("BEGIN")
+                migrate(conn)
             conn.execute("PRAGMA journal_mode=WAL")
             # Materialize WAL state before subsequent read-only connections.
             conn.execute("SELECT count(*) FROM sqlite_master").fetchone()

@@ -16,13 +16,13 @@ from .book_models import (
     ChapterSummary,
     LearningStructure,
     Questions,
-    Relations,
 )
 from .extraction import SemanticExtractor, is_current, lesson_chunks, teaching_errors
 from .extraction_models import PIPELINE
 from .knowledge import check_refs, quality_report
 from .models import AppError, Draft
-from .relation_planner import candidate_pairs, relation_batches
+from .relation_planner import candidate_pairs as candidate_pairs
+from .relation_planner import relation_batches as relation_batches
 from .storage import dumps, now, uid
 
 
@@ -204,7 +204,7 @@ class BookLearning:
                     (book.id, chunk.id, dumps(dict(Counter(tokens(chunk.text))))),
                 )
 
-    def index(self, book_id, emit=lambda _: None, new=False, section_id=None):
+    def index(self, book_id, emit=lambda _: None, new=False, section_id=None, content_only=False):
         book = self.app.book(book_id)
         # Old imports lack nested bookmark metadata; reading the outline does not
         # reparse or rewrite their original text chunks and citation coordinates.
@@ -234,22 +234,27 @@ class BookLearning:
             "ORDER BY created_at DESC",
             (book_id,),
         )
-        active = self.active(book_id)
+        active = self.content_active(book_id)
+        section_ids = [s.id for s in book.sections]
+        if section_id and section_id not in section_ids:
+            raise AppError("章节不存在。")
+        wanted = section_ids[: section_ids.index(section_id) + 1] if section_id else section_ids
+        baseline = json.loads(active["data"]) if active else {}
+        completed = baseline.get("indexed_sections", list(baseline.get("summaries", {})))
+        donors = [r for r in pending if is_current(r)]
         pending = [
             r
-            for r in pending
-            if is_current(r) and json.loads(r["data"]).get("rebuild_section") == section_id
+            for r in donors
+            if json.loads(r["data"]).get("through_section") == section_id
+            and "through_section" in json.loads(r["data"])
         ]
-        if section_id:
-            if not active:
-                raise AppError("按章重建需要已有新版全书索引；请先运行 teach index BOOK。")
-            if section_id not in {s.id for s in book.sections}:
-                raise AppError("章节不存在。")
         if pending and not new:
             owner = pending[0]["id"]
-        elif active and not new and not section_id:
-            emit("全书结构已完成，复用现有版本。")
-            return active
+        elif active and not new and set(wanted) <= set(completed):
+            emit("复用已审核内容。")
+            if not content_only:
+                self.relations(book_id, section_id, emit=emit, index=active)
+            return self.index_row(active["id"])
         else:
             owner = uid("index")
             with self.store.connect() as conn:
@@ -262,15 +267,45 @@ class BookLearning:
                         dumps(
                             {
                                 "pipeline": PIPELINE,
-                                "rebuild_section": section_id,
-                                "base_index": active["id"] if section_id else None,
+                                "through_section": section_id,
+                                "requested_sections": wanted,
+                                "rebuild_section": section_id if new else None,
+                                "base_index": active["id"]
+                                if active and (section_id or not new)
+                                else None,
                             }
                         ),
                         now(),
                     ),
                 )
+                # Reuse durable checkpoints when narrowing an interrupted full-book run.
+                # Explicit --new always regenerates the requested chapter (or full book).
+                for chapter in wanted:
+                    if new and (not section_id or chapter == section_id):
+                        continue
+                    donor = next(
+                        (
+                            r
+                            for r in donors
+                            if self.step(r["id"], f"{chapter}:{PIPELINE}:complete") is not None
+                        ),
+                        None,
+                    )
+                    if donor:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO book_steps SELECT ?,step,data FROM book_steps "
+                            "WHERE owner_id=? AND step LIKE ?",
+                            (owner, donor["id"], chapter + ":%"),
+                        )
+        state_rows = self.store.rows(
+            "SELECT status FROM index_content_state WHERE index_id=?", (owner,)
+        )
+        if state_rows and state_rows[0]["status"] == "ready":
+            if not content_only:
+                self.finish_index_relations(book_id, owner, emit)
+            return self.index_row(owner)
         emit(
-            f"全书梳理：{len(book.sections)} 个章节，{len(book.chunks)} 个文本块；"
+            f"内容梳理：处理 {wanted[0]}～{wanted[-1]}，复用已完成章节；"
             f"恢复命令：teach index {book_id}" + (f" --section {section_id}" if section_id else "")
         )
         state = json.loads(
@@ -285,8 +320,20 @@ class BookLearning:
             )
         points, items, summaries, regions = [], [], {}, []
         extractor = SemanticExtractor(self, book, owner, emit)
+        requested = state.get("requested_sections", wanted)
+        wanted = [
+            s.id
+            for s in book.sections
+            if s.id in requested or (base and s.id in base.get("summaries", {}))
+        ]
         for section in book.sections:
-            if base and section.id != section_id:
+            if section.id not in wanted:
+                continue
+            if (
+                base
+                and section.id in base.get("summaries", {})
+                and section.id != state.get("rebuild_section")
+            ):
                 copied = [p for p in base["points"] if p["section_id"] == section.id]
                 keys = {p["key"] for p in copied}
                 points.extend(copied)
@@ -323,88 +370,109 @@ class BookLearning:
                     break
                 units = results
                 level += 1
-        plan_key = "relations_v2:plan"
-        plan = self.step(owner, plan_key)
         all_keys = {p["key"] for p in points}
-        if plan is None:
-            briefs = [self.brief(p) for p in points]
-            candidates = candidate_pairs(briefs, tokens)
-            reused = []
-            if base:
-                changed = {p["key"] for p in points if p["section_id"] == section_id}
-                reused = [
-                    e
-                    for e in base["relations"]
-                    if e["source"] in all_keys
-                    and e["target"] in all_keys
-                    and e["source"] not in changed
-                    and e["target"] not in changed
-                ]
-                candidates = [
-                    (i, j)
-                    for i, j in candidates
-                    if briefs[i]["key"] in changed or briefs[j]["key"] in changed
-                ]
-            plan = {
-                "batches": relation_batches(briefs, candidates),
-                "reused": reused,
-                "candidate_count": len(candidates),
-            }
-            self.save_step(owner, plan_key, plan)
-        relations = list(plan["reused"])
-        batches = plan["batches"]
-        emit(f"关系候选：{plan['candidate_count']} 对；计划验证 {len(batches)} 批。")
-        for i, payload in enumerate(batches):
-            allowed = {frozenset(pair) for pair in payload["candidate_pairs"]}
-            keys = {p["key"] for p in payload["points"]}
-
-            def validate(value, keys=keys, allowed=allowed):
-                edges = [e.model_dump() for e in value.relations]
-                errors = relation_errors(edges, keys) + relation_errors(relations + edges, all_keys)
-                if any(frozenset((e["source"], e["target"])) not in allowed for e in edges):
-                    errors.append("只能返回 candidate_pairs 指定的候选知识点对之间的关系。")
-                return errors
-
-            emit(f"关系验证 {i + 1}/{len(batches)}：{len(allowed)} 对候选")
-            result = self.call(
-                book,
-                owner,
-                f"relations_v2:batch:{i}",
-                "book_relations",
-                payload,
-                Relations,
-                validate,
-                emit,
-            )
-            errors = validate(result)
-            if errors:
-                raise AppError("关系检查点校验失败：" + "；".join(errors))
-            relations.extend(e.model_dump() for e in result.relations)
-        unique = {(e["source"], e["target"], e["kind"]): e for e in relations}
+        changed = {p["key"] for p in points if p["section_id"] == section_id}
+        reused = (
+            [
+                e
+                for e in base["relations"]
+                if e["source"] in all_keys
+                and e["target"] in all_keys
+                and e["source"] not in changed
+                and e["target"] not in changed
+            ]
+            if base
+            else []
+        )
+        errors = relation_errors(reused, all_keys)
+        if errors:
+            raise AppError("继承关系校验失败：" + "；".join(errors))
         data = {
             "pipeline": PIPELINE,
             "regions": regions,
             "base_index": state.get("base_index"),
-            "rebuild_section": section_id,
+            "rebuild_section": state.get("rebuild_section"),
+            "through_section": state.get("through_section"),
+            "requested_sections": requested,
+            "indexed_sections": wanted,
+            "reviewed_sections": wanted,
             "points": points,
             "items": items,
             "summaries": summaries,
-            "relations": list(unique.values()),
+            "relations": reused,
             "unavailable_pages": book.unavailable_pages,
         }
+        digest = hashlib.sha256(
+            dumps({k: v for k, v in data.items() if k != "relations"}).encode()
+        ).hexdigest()
         with self.store.connect() as conn:
+            conn.execute("UPDATE book_indexes SET data=? WHERE id=?", (dumps(data), owner))
             conn.execute(
-                "UPDATE book_indexes SET status='ready',data=? WHERE id=?", (dumps(data), owner)
+                "INSERT INTO index_content_state(index_id,status,content_fingerprint) "
+                "VALUES(?,'ready',?) ON CONFLICT(index_id) DO UPDATE SET "
+                "status='ready',content_fingerprint=excluded.content_fingerprint",
+                (owner, digest),
             )
-        emit(f"全书梳理完成：{len(points)} 个知识点；不可读取页面 {book.unavailable_pages}")
-        return next(r for r in self.store.rows("SELECT * FROM book_indexes WHERE id=?", (owner,)))
+        emit(f"内容整理完成：{len(points)} 个知识点；不可读取页面 {book.unavailable_pages}")
+        if not content_only:
+            self.finish_index_relations(book_id, owner, emit)
+        return self.index_row(owner)
+
+    def finish_index_relations(self, book_id, owner, emit):
+        from .relations import RelationAnalysis
+
+        index = self.index_row(owner)
+        section = json.loads(index["data"]).get("through_section")
+        # Rebuild only checks candidates touching the changed chapter. It does
+        # not claim that any still-unchecked baseline candidates were checked.
+        scope = "@through:" + section if section else None
+        RelationAnalysis(self, index, emit).run(scope, max_depth=0 if section else 2)
+
+    def index_row(self, identifier):
+        return self.store.rows("SELECT * FROM book_indexes WHERE id=?", (identifier,))[0]
+
+    def content_active(self, book_id):
+        # Read-only commands still work before a schema-5 database has been migrated.
+        if not self.store.rows("SELECT name FROM sqlite_master WHERE name='index_content_state'"):
+            return self.active(book_id)
+        rows = self.store.rows(
+            "SELECT b.* FROM book_indexes b JOIN index_content_state c ON c.index_id=b.id "
+            "WHERE b.book_id=? AND c.status='ready' ORDER BY b.created_at DESC,b.id DESC",
+            (book_id,),
+        )
+        return next((r for r in rows if is_current(r)), None)
+
+    def relations(
+        self, book_id, section=None, max_calls=None, max_depth=2, emit=lambda _: None, index=None
+    ):
+        from .relations import RelationAnalysis
+
+        index = index or self.content_active(book_id)
+        if not index or not is_current(index):
+            raise AppError(f"内容尚未就绪，请先恢复：teach index {book_id} --content-only")
+        if section and max_calls is None:
+            max_calls = 4
+        return RelationAnalysis(self, index, emit).run(section, max_calls, max_depth)
+
+    def lesson_index(self, owner):
+        link = self.store.rows("SELECT * FROM lesson_links WHERE version_id=?", (owner,))[0]
+        index = self.index_row(link["index_id"])
+        if self.store.rows("SELECT name FROM sqlite_master WHERE name='lesson_relation_snapshots'"):
+            snapshots = self.store.rows(
+                "SELECT data FROM lesson_relation_snapshots WHERE version_id=?", (owner,)
+            )
+            if snapshots:
+                data = json.loads(index["data"])
+                data["relations"] = json.loads(snapshots[0]["data"])["relations"]
+                index["data"] = dumps(data)
+        return index
 
     @staticmethod
     def brief(point):
         return {k: point[k] for k in ("key", "title", "description", "section_id")}
 
     def marks(self, book_id, index=None):
-        index = index or self.active(book_id)
+        index = index or self.content_active(book_id)
         if not index:
             return set()
         records = {
@@ -418,7 +486,7 @@ class BookLearning:
         }
 
     def mastery(self, book_id, *, section=None, point=None, mark=True, index=None):
-        index = index or self.active(book_id)
+        index = index or self.content_active(book_id)
         if not index:
             raise AppError("请先完成 teach index BOOK。")
         selected = [
@@ -449,7 +517,7 @@ class BookLearning:
         return selected
 
     def prerequisites(self, book_id, section, index=None):
-        index = index or self.active(book_id)
+        index = index or self.content_active(book_id)
         if not index:
             raise AppError("请先完成 teach index BOOK。")
         data = json.loads(index["data"])
@@ -494,28 +562,191 @@ class BookLearning:
             result.update(key for key, states in evidence.items() if all(states))
         return result
 
-    def learn(self, book_id, section, emit=lambda _: None, new=False):
+    def learn(
+        self,
+        book_id,
+        section,
+        emit=lambda _: None,
+        new=False,
+        allow_partial_relations=False,
+        choose_partial=None,
+    ):
+        from .relations import RelationFailure, RelationsPaused
+
         book = self.app.book(book_id)
-        index = self.active(book_id)
-        if not index:
-            raise AppError(f"请先完成：teach index {book_id}")
         self.app.section_chunks(book, section)
         links = self.store.rows(
             "SELECT l.* FROM lesson_links l JOIN versions v ON v.id=l.version_id "
-            "WHERE l.index_id=? AND l.section_id=? ORDER BY v.created_at DESC",
-            (index["id"], section),
+            "WHERE v.book_id=? AND l.section_id=? ORDER BY v.created_at DESC,v.id DESC",
+            (book_id, section),
         )
+        links = [
+            link
+            for link in links
+            if is_current(self.index_row(link["index_id"]))
+            or self.store.get("versions", link["version_id"])["data"] != "{}"
+        ]
         if links and not new:
             owner = links[0]["version_id"]
         else:
-            owner = self.app.create_draft(book_id, section)
+            index = self.content_active(book_id)
+            if not index:
+                raise AppError(f"内容尚未就绪，请先恢复：teach index {book_id} --content-only")
+            data = json.loads(index["data"])
+            order = [s.id for s in book.sections]
+            required = order[: order.index(section) + 1]
+            if not set(required) <= set(data.get("indexed_sections", data.get("summaries", {}))):
+                raise AppError(
+                    f"前序章节内容尚未就绪，请运行：teach index {book_id} "
+                    f"--section {section} --content-only"
+                )
+            if not any(p["section_id"] == section for p in json.loads(index["data"])["points"]):
+                raise AppError("所选范围没有可学习知识点（目录或出版信息已排除）。")
+            while True:
+                try:
+                    coverage = self.relations(book_id, section, emit=emit, index=index)
+                except RelationFailure as exc:
+                    from .relations import RelationAnalysis
+
+                    analysis = RelationAnalysis(self, index, emit)
+                    task = analysis.task(section, 2)
+                    coverage = analysis.coverage(task)
+                    coverage["last_error"] = str(exc)
+                    if not allow_partial_relations and choose_partial is None:
+                        raise
+                if coverage["status"] == "candidate_complete" or allow_partial_relations:
+                    break
+                choice = choose_partial(coverage) if choose_partial else "exit"
+                if choice == "continue":
+                    # A depth-limited traversal needs a larger scope as well as more calls.
+                    if coverage["unexpanded"]:
+                        with self.store.connect() as conn:
+                            conn.execute(
+                                "UPDATE relation_tasks SET max_depth=max_depth+1 WHERE id=?",
+                                (coverage["task_id"],),
+                            )
+                    continue
+                if choice == "partial":
+                    allow_partial_relations = True
+                    break
+                raise RelationsPaused(
+                    "关系分析尚未完整；请运行 teach relations BOOK --section SECTION "
+                    "继续，或显式传入 --allow-partial-relations。"
+                )
+            index = self.index_row(index["id"])
+            data = json.loads(index["data"])
+            state = self.store.rows(
+                "SELECT * FROM index_content_state WHERE index_id=?", (index["id"],)
+            )[0]
+            allowed = {p["key"] for p in data["points"] if p["section_id"] in required}
+            data["relations"] = [
+                e for e in data["relations"] if e["source"] in allowed and e["target"] in allowed
+            ]
+            chapter_keys = {p["key"] for p in data["points"] if p["section_id"] == section}
+            used_keys = set(chapter_keys)
+            while True:
+                ancestors = {
+                    e["source"]
+                    for e in data["relations"]
+                    if e["kind"] == "prerequisite" and e["target"] in used_keys
+                }
+                if ancestors <= used_keys:
+                    break
+                used_keys |= ancestors
+            snapshot = dict(
+                relations=[
+                    e
+                    for e in data["relations"]
+                    if e["source"] in used_keys and e["target"] in used_keys
+                ],
+                coverage=coverage,
+                origin="explicit",
+                allow_partial=allow_partial_relations,
+                prerequisite_context=[
+                    self.brief(p) for p in data["points"] if p["key"] in used_keys - chapter_keys
+                ],
+            )
+            # Version, link, and snapshot share one commit. Backend binding may precede it.
+            owner = uid("ver")
+            model = self.app.gateway(book, owner).model
             with self.store.connect() as conn:
                 conn.execute(
+                    "INSERT INTO versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        owner,
+                        book_id,
+                        section,
+                        "draft",
+                        0,
+                        "{}",
+                        None,
+                        None,
+                        "{}",
+                        None,
+                        model,
+                        now(),
+                    ),
+                )
+                conn.execute(
                     "INSERT INTO lesson_links VALUES(?,?,?,?)", (owner, index["id"], section, "{}")
+                )
+                conn.execute(
+                    "INSERT INTO lesson_relation_snapshots VALUES(?,?,?,?)",
+                    (owner, index["id"], state["graph_revision"], dumps(snapshot)),
                 )
         emit(f"教学版本：{owner}；恢复：teach prepare {owner}")
         self.build_lesson(owner, emit)
         return owner
+
+    def freeze_lesson(self, owner, link):
+        if self.store.rows("SELECT 1 FROM lesson_relation_snapshots WHERE version_id=?", (owner,)):
+            return
+        index = self.index_row(link["index_id"])
+        data = json.loads(index["data"])
+        if not is_current(index):
+            return
+        section = link["section_id"].partition("@")[0]
+        order = [s.id for s in self.app.book(index["book_id"]).sections]
+        prefix = order[: order.index(section) + 1]
+        allowed = {p["key"] for p in data["points"] if p["section_id"] in prefix}
+        data["relations"] = [
+            e for e in data["relations"] if e["source"] in allowed and e["target"] in allowed
+        ]
+        from .relations import RelationAnalysis
+
+        analysis = RelationAnalysis(self, index)
+        tasks = self.store.rows(
+            "SELECT * FROM relation_tasks WHERE index_id=? AND section_id=''",
+            (index["id"],),
+        )
+        coverage = analysis.coverage(tasks[0]) if tasks else {"status": "legacy_unknown"}
+        with self.store.connect() as conn:
+            state = conn.execute(
+                "SELECT graph_revision FROM index_content_state WHERE index_id=?", (index["id"],)
+            ).fetchone()
+            roots = {p["key"] for p in data["points"] if p["section_id"] == section}
+            used = set(roots)
+            while True:
+                parents = {
+                    e["source"]
+                    for e in data["relations"]
+                    if e["kind"] == "prerequisite" and e["target"] in used
+                }
+                if parents <= used:
+                    break
+                used |= parents
+            snapshot = dict(
+                relations=[
+                    e for e in data["relations"] if e["source"] in used and e["target"] in used
+                ],
+                coverage=coverage,
+                origin="explicit",
+                allow_partial=False,
+            )
+            conn.execute(
+                "INSERT INTO lesson_relation_snapshots VALUES(?,?,?,?)",
+                (owner, index["id"], state[0] if state else 0, dumps(snapshot)),
+            )
 
     def build_lesson(self, owner, emit=lambda _: None):
         row, book, chunks = self.app.version(owner)
@@ -523,11 +754,8 @@ class BookLearning:
             emit("复用已保存教学版本。")
             return
         link = self.store.rows("SELECT * FROM lesson_links WHERE version_id=?", (owner,))[0]
-        data = json.loads(
-            self.store.rows("SELECT data FROM book_indexes WHERE id=?", (link["index_id"],))[0][
-                "data"
-            ]
-        )
+        self.freeze_lesson(owner, link)
+        data = json.loads(self.lesson_index(owner)["data"])
         if data.get("pipeline") != PIPELINE:
             raise AppError("旧提取流程已废弃，请重新运行 teach index BOOK 后创建教学版本。")
         actual_section = link["section_id"].partition("@")[0]
@@ -542,11 +770,17 @@ class BookLearning:
         if not chapter:
             raise AppError("所选范围没有可学习知识点（目录或出版信息已排除）。")
         chapter_keys = {p["key"] for p in chapter}
-        context_keys = {
-            e["source"]
-            for e in data["relations"]
-            if e["kind"] == "prerequisite" and e["target"] in chapter_keys
-        }
+        context_keys = set(chapter_keys)
+        while True:
+            parents = {
+                e["source"]
+                for e in data["relations"]
+                if e["kind"] == "prerequisite" and e["target"] in context_keys
+            }
+            if parents <= context_keys:
+                break
+            context_keys |= parents
+        context_keys -= chapter_keys
         prerequisite_context = [self.brief(p) for p in data["points"] if p["key"] in context_keys]
         structures = []
         point_map = []

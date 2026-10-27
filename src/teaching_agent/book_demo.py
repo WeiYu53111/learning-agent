@@ -49,7 +49,7 @@ def book_operation(operation, payload, contract):
     if operation == "book_summary":
         return contract(summary="离线演示：本章知识结构与原文导航。")
     if operation == "book_relations":
-        return contract(relations=[])
+        return contract(checks=[dict(pair_id=p["pair_id"], relations=[]) for p in payload["pairs"]])
     if operation == "learning_structure":
         # The bundled textbook keeps its established deterministic exercises.
         if chunks and all("Python 对象" in c["text"] for c in chunks):

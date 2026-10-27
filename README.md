@@ -78,7 +78,7 @@ teach ask BOOK --text "为什么工具定义变化会影响缓存？"
 
 学习中使用 `/ask 问题`。问答仅依据当前书籍的原文，支持跨章检索和未学习章节，附物理页码及引用；不联网补充，不更新学习进度。原文导入后即可提问，无需等待 `index`；提问不会自动启动全书或整章梳理、出题。证据不足会明确说明。
 
-相关检查点、模型调用耗时和失败原因保存在本地 SQLite 中。数据库自动增量升级至 schema 5，旧教材、会话和评分保留。首次全书梳理仍可能耗时较长；本地词项检索可能遗漏同义表达，真实教材的质量和耗时仍需对照验证。完整流程见[全书学习方案与实现状态](docs/plans/book-learning.md)。
+相关检查点、模型调用耗时和失败原因保存在本地 SQLite 中。数据库自动增量升级至 schema 6，旧教材、会话和评分保留。首次全书梳理仍可能耗时较长；本地词项检索可能遗漏同义表达，真实教材的质量和耗时仍需对照验证。完整流程见[全书学习方案与实现状态](docs/plans/book-learning.md)。
 
 
 ## 立即体验
@@ -408,3 +408,35 @@ python -m venv .venv
 - [各模块详细设计](docs/modules/README.md)：完整设计契约。
 
 当前接口以原型使用说明和 `teach --help` 为准。支持本地只读 Web 检查；暂不支持 Web 写操作、OCR、向量数据库或多用户并发写入。
+
+### 内容就绪与按章关系分析
+
+新版 semantic-v1 提取、审核和摘要完成后即可保存内容快照；全书关系尚未完成时也可按章学习。
+
+```sh
+teach index BOOK --content-only
+teach relations BOOK --section SECTION --max-calls 4 --max-depth 2
+teach learn BOOK --section SECTION
+```
+
+章节关系默认最多 4 次调用、展开 2 层。预算耗尽会暂停；只有显式使用 `--allow-partial-relations` 才接受部分覆盖。课程保存固定关系快照，后续关系变化不改写已有课程。`index --new` 总是创建新索引；按章重建只检查受影响候选，Web 单独显示其覆盖范围。
+
+旧提取索引不会作为新版学习入口。清理前先预览，执行时自动用 SQLite backup API 备份（包含 WAL 中已提交数据）；有课程引用则停止。PDF、原文、检索内容和其他课程保留，不自动调用模型重提取。
+
+```sh
+python -m teaching_agent.maintenance --data-dir data-v2 --book BOOK
+python -m teaching_agent.maintenance --data-dir data-v2 --book BOOK --apply
+```
+
+### 顺序阅读：默认索引到目标章
+
+```sh
+teach index BOOK --section s4 --content-only
+teach learn BOOK --section s4
+```
+
+`--section s4` 默认补齐 s1～s4 的内容提取、审核和摘要，不要求先完成全书。已经审核完成的章节直接复用；此前全书任务中已保存的章节检查点也可复用。后续指定 s5 时只补缺失章节。省略 `--content-only` 会继续检查截至目标章的候选关系。
+
+`index BOOK` 处理全书并复用已完成章节；`index BOOK --new` 全书重建。`index BOOK --section s4 --new` 重建 s4，复用其他已完成章节并补齐缺失的前序章节；已有后续章节内容保留。学习要求目标及前序章节内容就绪，关系请求和新课程快照限定在目标及前序章节；后续章节未参与分析不表示没有关联。旧课程快照保持不变。
+
+Web 索引选择器显示已完成章节数，并列出已审核章节；未处理章节显示待审核及原文。本功能不会自动启动真实模型调用。

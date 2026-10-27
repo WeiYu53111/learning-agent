@@ -38,6 +38,15 @@ class Relations(Contract):
     relations: list[Relation] = Field(default_factory=list)
 
 
+class PairCheck(Contract):
+    pair_id: str
+    relations: list[Relation]
+
+
+class RelationChecks(Contract):
+    checks: list[PairCheck]
+
+
 class ChapterSummary(Contract):
     summary: str = Field(min_length=1, max_length=3000)
 
