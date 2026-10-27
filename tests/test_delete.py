@@ -155,7 +155,9 @@ def test_cascade_delete_complete_book_preserves_other_book(app, published, tmp_p
         conn.execute(
             "INSERT INTO book_indexes VALUES(?,?,?,?,?)", ("idx", book_id, "ready", "{}", "now")
         )
-        conn.execute("INSERT INTO lesson_links VALUES(?,?,?,?)", (published, "idx", "s1", "{}"))
+        conn.execute(
+            "INSERT OR REPLACE INTO lesson_links VALUES(?,?,?,?)", (published, "idx", "s1", "{}")
+        )
         conn.execute(
             "INSERT INTO book_questions VALUES(?,?,?,?,?)",
             ("ask", book_id, session_id, "{}", "now"),

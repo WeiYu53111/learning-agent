@@ -79,6 +79,7 @@ it("浏览已保存章节、筛选内容、点击引用并保留物理页码", a
   };
   const index = {
     id: "i",
+    pipeline: "semantic-v1",
     status: "ready",
     created_at: "2026-10-26T00:00:00Z",
   };

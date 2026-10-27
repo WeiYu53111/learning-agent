@@ -15,6 +15,7 @@ class KnowledgePoint(Contract):
 
 
 class NavigationItem(Contract):
+    key: str = ""
     description: str = Field(min_length=1)
     kind: Literal["definition", "mechanism", "procedure", "boundary", "example", "background"]
     point_keys: list[str] = Field(min_length=1)
@@ -22,8 +23,8 @@ class NavigationItem(Contract):
 
 
 class Navigation(Contract):
-    points: list[KnowledgePoint] = Field(min_length=1)
-    items: list[NavigationItem] = Field(min_length=1)
+    points: list[KnowledgePoint]
+    items: list[NavigationItem]
 
 
 class Relation(Contract):

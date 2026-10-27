@@ -1,0 +1,333 @@
+{
+  "case": {
+    "id": "mixed_frontmatter",
+    "text": "目录\n第一章 栈……1\n第二章 队列……8\n版权声明：版权所有，未经许可不得复制。\n第一章 栈\n栈是一种后进先出的结构。\n入栈和出栈都在栈顶进行。\n叠盘子时先拿最上面的盘子，可用于理解栈。\n1.1 括号匹配\n扫描字符，左括号入栈；遇右括号时检查栈非空且栈顶是匹配的左括号，再出栈。\n扫描结束时栈为空才表示全部匹配，否则报告不匹配。",
+    "expectation": "目录版权排除；栈定义/操作特点/类比合为一概念；括号匹配作为独立方法且包含边界"
+  },
+  "index_id": "index_b96db0b62ce4454c",
+  "pipeline": "semantic-v1",
+  "first_pass": [
+    {
+      "points": [
+        {
+          "key": "p1",
+          "title": "栈的基本概念",
+          "description": "介绍栈后进先出的特点、入栈和出栈均在栈顶进行的操作位置，并通过叠盘子理解栈。",
+          "source_refs": [
+            {
+              "chunk_id": "c1",
+              "quote": "第一章 栈\n栈是一种后进先出的结构。\n入栈和出栈都在栈顶进行。\n叠盘子时先拿最上面的盘子，可用于理解栈。"
+            }
+          ]
+        }
+      ],
+      "items": [
+        {
+          "key": "i1",
+          "description": "栈的章节标题及后进先出的基本特点。",
+          "kind": "definition",
+          "point_keys": [
+            "p1"
+          ],
+          "source_refs": [
+            {
+              "chunk_id": "c1",
+              "quote": "第一章 栈\n栈是一种后进先出的结构。"
+            }
+          ]
+        },
+        {
+          "key": "i2",
+          "description": "入栈和出栈的操作位置都是栈顶。",
+          "kind": "mechanism",
+          "point_keys": [
+            "p1"
+          ],
+          "source_refs": [
+            {
+              "chunk_id": "c1",
+              "quote": "入栈和出栈都在栈顶进行。"
+            }
+          ]
+        },
+        {
+          "key": "i3",
+          "description": "用叠盘子时先取最上面的盘子的例子帮助理解栈。",
+          "kind": "example",
+          "point_keys": [
+            "p1"
+          ],
+          "source_refs": [
+            {
+              "chunk_id": "c1",
+              "quote": "叠盘子时先拿最上面的盘子，可用于理解栈。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "points": [
+        {
+          "key": "p1",
+          "title": "用栈进行括号匹配",
+          "description": "逐个扫描字符，将左括号入栈；遇到右括号时，检查栈非空且栈顶左括号与之匹配后出栈，并根据扫描结束时栈是否为空判断是否全部匹配。",
+          "source_refs": [
+            {
+              "chunk_id": "c1",
+              "quote": "扫描字符，左括号入栈；遇右括号时检查栈非空且栈顶是匹配的左括号，再出栈。\n扫描结束时栈为空才表示全部匹配，否则报告不匹配。"
+            }
+          ]
+        }
+      ],
+      "items": [
+        {
+          "key": "i1",
+          "description": "括号匹配的扫描与入栈、出栈步骤，处理右括号的检查条件，以及扫描结束后的匹配判定。",
+          "kind": "procedure",
+          "point_keys": [
+            "p1"
+          ],
+          "source_refs": [
+            {
+              "chunk_id": "c1",
+              "quote": "1.1 括号匹配\n扫描字符，左括号入栈；遇右括号时检查栈非空且栈顶是匹配的左括号，再出栈。\n扫描结束时栈为空才表示全部匹配，否则报告不匹配。"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "final": {
+    "pipeline": "semantic-v1",
+    "regions": [
+      {
+        "chunk_id": "c1",
+        "start": 0,
+        "end": 22,
+        "section_id": "s1",
+        "role": "navigation",
+        "path": [
+          "实验样本"
+        ],
+        "topic": "目录",
+        "reason": "目录标识及带页码的章节条目用于导航。",
+        "excluded": true
+      },
+      {
+        "chunk_id": "c1",
+        "start": 22,
+        "end": 42,
+        "section_id": "s1",
+        "role": "publication",
+        "path": [
+          "实验样本"
+        ],
+        "topic": "版权声明",
+        "reason": "说明版权归属和复制限制，属于出版信息。",
+        "excluded": true
+      },
+      {
+        "chunk_id": "c1",
+        "start": 42,
+        "end": 95,
+        "section_id": "s1",
+        "role": "teaching",
+        "path": [
+          "第一章 栈"
+        ],
+        "topic": "栈的概念与操作",
+        "reason": "章标题及其正文连续介绍栈的特点、操作位置和理解例子，属于同一教学主题。",
+        "excluded": false
+      },
+      {
+        "chunk_id": "c1",
+        "start": 95,
+        "end": 165,
+        "section_id": "s1",
+        "role": "teaching",
+        "path": [
+          "第一章 栈",
+          "1.1 括号匹配"
+        ],
+        "topic": "用栈进行括号匹配",
+        "reason": "小节标题与正文说明匹配步骤、检查条件及结束时的判断，构成完整教学内容。",
+        "excluded": false
+      }
+    ],
+    "base_index": null,
+    "rebuild_section": null,
+    "points": [
+      {
+        "key": "k_44bf9833d5b018bd",
+        "title": "栈的基本概念",
+        "description": "介绍栈后进先出的特点、入栈和出栈均在栈顶进行的操作位置，并通过叠盘子理解栈。",
+        "source_refs": [
+          {
+            "chunk_id": "c1",
+            "quote": "第一章 栈\n栈是一种后进先出的结构。\n入栈和出栈都在栈顶进行。\n叠盘子时先拿最上面的盘子，可用于理解栈。"
+          }
+        ],
+        "section_id": "s1"
+      },
+      {
+        "key": "k_7f9a11a9b044b258",
+        "title": "用栈进行括号匹配",
+        "description": "逐个扫描字符，将左括号入栈；遇到右括号时，检查栈非空且栈顶左括号与之匹配后出栈，并根据扫描结束时栈是否为空判断是否全部匹配。",
+        "source_refs": [
+          {
+            "chunk_id": "c1",
+            "quote": "扫描字符，左括号入栈；遇右括号时检查栈非空且栈顶是匹配的左括号，再出栈。\n扫描结束时栈为空才表示全部匹配，否则报告不匹配。"
+          }
+        ],
+        "section_id": "s1"
+      }
+    ],
+    "items": [
+      {
+        "key": "s1_b0_i0",
+        "description": "栈的章节标题及后进先出的基本特点。",
+        "kind": "definition",
+        "point_keys": [
+          "k_44bf9833d5b018bd"
+        ],
+        "source_refs": [
+          {
+            "chunk_id": "c1",
+            "quote": "第一章 栈\n栈是一种后进先出的结构。"
+          }
+        ]
+      },
+      {
+        "key": "s1_b0_i1",
+        "description": "入栈和出栈的操作位置都是栈顶。",
+        "kind": "mechanism",
+        "point_keys": [
+          "k_44bf9833d5b018bd"
+        ],
+        "source_refs": [
+          {
+            "chunk_id": "c1",
+            "quote": "入栈和出栈都在栈顶进行。"
+          }
+        ]
+      },
+      {
+        "key": "s1_b0_i2",
+        "description": "用叠盘子时先取最上面的盘子的例子帮助理解栈。",
+        "kind": "example",
+        "point_keys": [
+          "k_44bf9833d5b018bd"
+        ],
+        "source_refs": [
+          {
+            "chunk_id": "c1",
+            "quote": "叠盘子时先拿最上面的盘子，可用于理解栈。"
+          }
+        ]
+      },
+      {
+        "key": "s1_b1_i0",
+        "description": "括号匹配的扫描与入栈、出栈步骤，处理右括号的检查条件，以及扫描结束后的匹配判定。",
+        "kind": "procedure",
+        "point_keys": [
+          "k_7f9a11a9b044b258"
+        ],
+        "source_refs": [
+          {
+            "chunk_id": "c1",
+            "quote": "1.1 括号匹配\n扫描字符，左括号入栈；遇右括号时检查栈非空且栈顶是匹配的左括号，再出栈。\n扫描结束时栈为空才表示全部匹配，否则报告不匹配。"
+          }
+        ]
+      }
+    ],
+    "summaries": {
+      "s1": "本节介绍栈后进先出的特点，以及入栈、出栈均在栈顶进行的操作规则，通过叠盘子帮助理解，并将其应用于括号匹配：逐个扫描字符，左括号入栈；遇到右括号时，检查栈非空且栈顶左括号匹配后出栈；扫描过程中匹配无误且结束时栈为空，表示括号全部匹配。"
+    },
+    "relations": [
+      {
+        "source": "k_44bf9833d5b018bd",
+        "target": "k_7f9a11a9b044b258",
+        "kind": "prerequisite",
+        "reason": "括号匹配依赖栈的后进先出特点，以及栈顶、入栈和出栈的基本概念。"
+      }
+    ],
+    "unavailable_pages": []
+  },
+  "calls": [
+    {
+      "step": "s1:semantic-v1:source:0",
+      "operation": "source_analysis",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 134.23499999998603,
+      "input_chars": 1061,
+      "output_chars": 472
+    },
+    {
+      "step": "s1:semantic-v1:extract:0",
+      "operation": "book_index",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 128.53099999995902,
+      "input_chars": 626,
+      "output_chars": 653
+    },
+    {
+      "step": "s1:semantic-v1:quality:0:audit",
+      "operation": "extraction_review",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 124.93700000003446,
+      "input_chars": 1346,
+      "output_chars": 13
+    },
+    {
+      "step": "s1:semantic-v1:extract:1",
+      "operation": "book_index",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 207.56199999991804,
+      "input_chars": 626,
+      "output_chars": 466
+    },
+    {
+      "step": "s1:semantic-v1:quality:1:audit",
+      "operation": "extraction_review",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 130.8279999999795,
+      "input_chars": 1197,
+      "output_chars": 13
+    },
+    {
+      "step": "s1:semantic-v1:boundary:0",
+      "operation": "boundary_review",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 148.4529999999795,
+      "input_chars": 524,
+      "output_chars": 13
+    },
+    {
+      "step": "s1:summary:0:0",
+      "operation": "book_summary",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 125.06200000003446,
+      "input_chars": 312,
+      "output_chars": 130
+    },
+    {
+      "step": "relations_v2:batch:0",
+      "operation": "book_relations",
+      "model": "local_codex/codex_cli:gpt-6-astra",
+      "elapsed_seconds": 132.75,
+      "input_chars": 359,
+      "output_chars": 142
+    }
+  ],
+  "manual_review_required": false,
+  "manual_review": {
+    "date": "2026-10-27",
+    "scope": "mixed_frontmatter 单样本，非完整教材验收",
+    "result": "通过：目录及版权排除；首次提取将定义、操作位置和类比归入栈基本概念；括号匹配作为独立方法；两个审核无问题，跨批不合并；关系方向正确。",
+    "resume": "第二批审核超时后恢复，前四个成功步骤未重跑。",
+    "successful_call_count": 8,
+    "successful_elapsed_seconds": 1132.4,
+    "timing_note": "仅累计成功调用，不含失败调用及中断等待；不代表其他教材或模型性能。"
+  }
+}

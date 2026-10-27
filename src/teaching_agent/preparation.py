@@ -9,6 +9,8 @@ from .storage import dumps, uid
 def prepare(app, identifier, retry=False, progress=None):
     emit = progress or (lambda message: None)
     row, book, chunks = app.version(identifier)
+    if not chunks:
+        raise AppError("所选范围没有可教学正文；目录及出版内容不生成课程。")
     if row["status"] != "draft":
         raise AppError("已发布版本不能重新准备，请先 clone。")
     state = app.preparation(identifier)

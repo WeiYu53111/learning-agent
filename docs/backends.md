@@ -1,6 +1,6 @@
 # 可替换模型后端
 
-教学模块通过 `ModelBackend` 接口调用 `extract/audit/revise/revise_patch/task/grade/task_evidence/grade_evidence`。自动准备与独立修订使用 `revise_patch` 返回局部修改包，`revise` 保留给提取批次校正。HTTP API 和 Codex CLI 共用 DraftPatch 契约及提示词，离线演示明确不支持自然语言修订。教材审核、掌握判定、数据库和恢复仍由 teach 管理。
+教学模块通过 `ModelBackend` 的 `book_operation` 执行内容分类、知识提取、语义审核、跨批审查以及教学结构/题目生成；旧 `extract` 操作已删除。自动准备与独立修订使用 `revise_patch` 返回局部修改包；新版知识提取纠错使用同一 `book_index` 操作并携带候选和错误。HTTP API 和 Codex CLI 共用契约及提示词，离线演示不用于语义质量验收。教材审核、掌握判定、数据库和恢复仍由 teach 管理。
 
 ## 1. 选择配置
 
@@ -94,7 +94,7 @@ output_tokens = 8000
 模型提示文本位于 `src/teaching_agent/prompts/`，随安装包发布：
 
 - `common.txt`：所有操作共用的系统约束。
-- `extract.txt`、`audit.txt`：教材提取与草稿审核。
+- `source_analysis.txt`、`book_index.txt`、`extraction_review.txt`、`boundary_review.txt`：唯一的新知识提取流程；`audit.txt` 用于教学草稿审核。旧 `extract.txt` 已删除。
 - `revise.txt`、`revise_patch.txt`：全量与局部修订。
 - `task.txt`、`grade.txt`：旧版出题与评分，保留用于兼容。
 - `task_evidence.txt`、`grade_evidence.txt`：新版核心要求出题与能力评价，支持缺口覆盖和局部追问。

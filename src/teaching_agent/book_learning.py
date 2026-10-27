@@ -15,10 +15,11 @@ from .book_models import (
     BookAnswer,
     ChapterSummary,
     LearningStructure,
-    Navigation,
     Questions,
     Relations,
 )
+from .extraction import SemanticExtractor, is_current, lesson_chunks, teaching_errors
+from .extraction_models import PIPELINE
 from .knowledge import check_refs, quality_report
 from .models import AppError, Draft
 from .relation_planner import candidate_pairs, relation_batches
@@ -103,7 +104,7 @@ class BookLearning:
             "ORDER BY created_at DESC,id DESC",
             (book_id,),
         )
-        return rows[0] if rows else None
+        return next((r for r in rows if is_current(r)), None)
 
     def step(self, owner, key):
         rows = self.store.rows(
@@ -127,7 +128,11 @@ class BookLearning:
         cached = self.step(owner, key)
         if cached is not None:
             emit(f"{key}：复用已保存结果")
-            return contract.model_validate(cached)
+            value = contract.model_validate(cached)
+            errors = validate(value)
+            if errors:
+                raise AppError("已保存检查点未通过校验：" + "；".join(errors))
+            return value
         gateway = self.app.gateway(book, owner)
         previous = self.step(owner, key + ":rejected")
         request = dict(payload)
@@ -148,8 +153,8 @@ class BookLearning:
             except (AppError, ValidationError) as exc:
                 errors = [str(exc)] if isinstance(exc, AppError) else ["返回内容不符合数据契约"]
                 rejected = {
-                    "candidate": candidate.model_dump() if candidate else None,
-                    "errors": errors,
+                    "candidate": candidate.model_dump() if candidate else request.get("previous"),
+                    "errors": errors if candidate else request.get("errors", []) + errors,
                 }
                 self.save_step(owner, key + ":rejected", rejected)
                 self.event(
@@ -199,31 +204,30 @@ class BookLearning:
                     (book.id, chunk.id, dumps(dict(Counter(tokens(chunk.text))))),
                 )
 
-    @staticmethod
-    def navigation_errors(nav, chunks):
-        keys = [p.key for p in nav.points]
-        errors = [] if len(keys) == len(set(keys)) else ["知识点 key 重复。"]
-        identities = [knowledge_key("", p) for p in nav.points]
-        if len(identities) != len(set(identities)):
-            errors.append("相同标题和原文位置的知识点重复，请合并。")
-        chunk_map = {c.id: c for c in chunks}
-        covered, mapped = set(), set()
-        for point in nav.points:
-            errors.extend(check_refs(point.source_refs, chunk_map))
-        for item in nav.items:
-            errors.extend(check_refs(item.source_refs, chunk_map))
-            if set(item.point_keys) - set(keys):
-                errors.append("内容清单引用未知知识点。")
-            mapped.update(item.point_keys)
-            covered.update(ref.chunk_id for ref in item.source_refs)
-        if set(chunk_map) - covered:
-            errors.append("原文片段没有内容清单：" + ",".join(sorted(set(chunk_map) - covered)))
-        if set(keys) - mapped:
-            errors.append("知识点没有关联内容清单。")
-        return errors
-
-    def index(self, book_id, emit=lambda _: None, new=False):
+    def index(self, book_id, emit=lambda _: None, new=False, section_id=None):
         book = self.app.book(book_id)
+        # Old imports lack nested bookmark metadata; reading the outline does not
+        # reparse or rewrite their original text chunks and citation coordinates.
+        if not book.bookmarks:
+            path = self.store.root / "documents" / f"{book.sha256}.pdf"
+            if path.is_file():
+                import pymupdf
+
+                from .models import Section
+
+                with pymupdf.open(path) as pdf:
+                    book.bookmarks = [
+                        Section(
+                            id=f"bookmark{i}",
+                            title=title,
+                            level=level,
+                            start_page=page,
+                            end_page=page,
+                            chunk_ids=[],
+                        )
+                        for i, (level, title, page) in enumerate(pdf.get_toc())
+                        if 1 <= page <= pdf.page_count
+                    ]
         self.ensure_search(book)
         pending = self.store.rows(
             "SELECT * FROM book_indexes WHERE book_id=? AND status='building' "
@@ -231,9 +235,19 @@ class BookLearning:
             (book_id,),
         )
         active = self.active(book_id)
-        if pending:
+        pending = [
+            r
+            for r in pending
+            if is_current(r) and json.loads(r["data"]).get("rebuild_section") == section_id
+        ]
+        if section_id:
+            if not active:
+                raise AppError("按章重建需要已有新版全书索引；请先运行 teach index BOOK。")
+            if section_id not in {s.id for s in book.sections}:
+                raise AppError("章节不存在。")
+        if pending and not new:
             owner = pending[0]["id"]
-        elif active and not new:
+        elif active and not new and not section_id:
             emit("全书结构已完成，复用现有版本。")
             return active
         else:
@@ -241,39 +255,52 @@ class BookLearning:
             with self.store.connect() as conn:
                 conn.execute(
                     "INSERT INTO book_indexes VALUES(?,?,?,?,?)",
-                    (owner, book_id, "building", "{}", now()),
+                    (
+                        owner,
+                        book_id,
+                        "building",
+                        dumps(
+                            {
+                                "pipeline": PIPELINE,
+                                "rebuild_section": section_id,
+                                "base_index": active["id"] if section_id else None,
+                            }
+                        ),
+                        now(),
+                    ),
                 )
         emit(
             f"全书梳理：{len(book.sections)} 个章节，{len(book.chunks)} 个文本块；"
-            f"恢复命令：teach index {book_id}"
+            f"恢复命令：teach index {book_id}" + (f" --section {section_id}" if section_id else "")
         )
-        points, items, summaries = [], [], {}
+        state = json.loads(
+            self.store.rows("SELECT data FROM book_indexes WHERE id=?", (owner,))[0]["data"]
+        )
+        base = None
+        if state.get("base_index"):
+            base = json.loads(
+                self.store.rows("SELECT data FROM book_indexes WHERE id=?", (state["base_index"],))[
+                    0
+                ]["data"]
+            )
+        points, items, summaries, regions = [], [], {}, []
+        extractor = SemanticExtractor(self, book, owner, emit)
         for section in book.sections:
-            chunks = self.app.section_chunks(book, section.id)
-            section_points = []
-            for i, batch in enumerate(self.app.batches(chunks)):
-                nav = self.call(
-                    book,
-                    owner,
-                    f"{section.id}:extract:{i}",
-                    "book_index",
-                    {"chunks": [c.model_dump() for c in batch]},
-                    Navigation,
-                    lambda value, batch=batch: self.navigation_errors(value, batch),
-                    emit,
-                )
-                mapping = {p.key: knowledge_key(section.id, p) for p in nav.points}
-                for point in nav.points:
-                    value = point.model_dump()
-                    value.update(key=mapping[point.key], section_id=section.id)
-                    points.append(value)
-                    section_points.append(value)
-                for item in nav.items:
-                    value = item.model_dump()
-                    value["point_keys"] = [mapping[k] for k in item.point_keys]
-                    items.append(value)
+            if base and section.id != section_id:
+                copied = [p for p in base["points"] if p["section_id"] == section.id]
+                keys = {p["key"] for p in copied}
+                points.extend(copied)
+                items.extend(it for it in base["items"] if keys.intersection(it["point_keys"]))
+                regions.extend(r for r in base["regions"] if r["section_id"] == section.id)
+                summaries[section.id] = base["summaries"][section.id]
+                continue
+            result = extractor.section(section)
+            section_points = result["points"]
+            points.extend(section_points)
+            items.extend(result["items"])
+            regions.extend(result["regions"])
             if not section_points:
-                summaries[section.id] = "无可读取原文。"
+                summaries[section.id] = "本章没有可提取的教学正文；原文及排除理由已保留。"
                 continue
             units = [self.brief(p) for p in section_points]
             level = 0
@@ -301,45 +328,32 @@ class BookLearning:
         all_keys = {p["key"] for p in points}
         if plan is None:
             briefs = [self.brief(p) for p in points]
-            # Reconstruct the old grouping to reuse both positive and empty results.
-            partitions = list(groups(briefs, 6000))
-            partition_of = {p["key"]: i for i, batch in enumerate(partitions) for p in batch}
-            covered, legacy = set(), []
-            rows = self.store.rows("SELECT step,data FROM book_steps WHERE owner_id=?", (owner,))
-            for row in sorted(rows, key=lambda r: r["step"]):
-                match = re.fullmatch(r"relations:(\d+):(\d+)", row["step"])
-                if not match:
-                    continue
-                i, j = map(int, match.groups())
-                if not (0 <= i <= j < len(partitions)):
-                    raise AppError("旧关系检查点与知识点分组不一致。")
-                edges = Relations.model_validate_json(row["data"])
-                legacy.extend(e.model_dump() for e in edges.relations)
-                covered.add((i, j))
-            errors = relation_errors(legacy, all_keys)
-            if errors:
-                raise AppError("旧关系检查点校验失败：" + "；".join(errors))
             candidates = candidate_pairs(briefs, tokens)
-            remaining = [
-                (i, j)
-                for i, j in candidates
-                if tuple(sorted((partition_of[briefs[i]["key"]], partition_of[briefs[j]["key"]])))
-                not in covered
-            ]
+            reused = []
+            if base:
+                changed = {p["key"] for p in points if p["section_id"] == section_id}
+                reused = [
+                    e
+                    for e in base["relations"]
+                    if e["source"] in all_keys
+                    and e["target"] in all_keys
+                    and e["source"] not in changed
+                    and e["target"] not in changed
+                ]
+                candidates = [
+                    (i, j)
+                    for i, j in candidates
+                    if briefs[i]["key"] in changed or briefs[j]["key"] in changed
+                ]
             plan = {
-                "batches": relation_batches(briefs, remaining),
-                "legacy": legacy,
+                "batches": relation_batches(briefs, candidates),
+                "reused": reused,
                 "candidate_count": len(candidates),
-                "reused_pairs": len(candidates) - len(remaining),
-                "legacy_steps": len(covered),
             }
             self.save_step(owner, plan_key, plan)
-        relations = list(plan["legacy"])
+        relations = list(plan["reused"])
         batches = plan["batches"]
-        emit(
-            f"关系候选：{plan['candidate_count']} 对；复用旧分析 {plan['legacy_steps']} 批"
-            f"（覆盖 {plan['reused_pairs']} 对候选）；计划验证 {len(batches)} 批。"
-        )
+        emit(f"关系候选：{plan['candidate_count']} 对；计划验证 {len(batches)} 批。")
         for i, payload in enumerate(batches):
             allowed = {frozenset(pair) for pair in payload["candidate_pairs"]}
             keys = {p["key"] for p in payload["points"]}
@@ -368,6 +382,10 @@ class BookLearning:
             relations.extend(e.model_dump() for e in result.relations)
         unique = {(e["source"], e["target"], e["kind"]): e for e in relations}
         data = {
+            "pipeline": PIPELINE,
+            "regions": regions,
+            "base_index": state.get("base_index"),
+            "rebuild_section": section_id,
             "points": points,
             "items": items,
             "summaries": summaries,
@@ -510,7 +528,19 @@ class BookLearning:
                 "data"
             ]
         )
-        chapter = [p for p in data["points"] if p["section_id"] == link["section_id"]]
+        if data.get("pipeline") != PIPELINE:
+            raise AppError("旧提取流程已废弃，请重新运行 teach index BOOK 后创建教学版本。")
+        actual_section = link["section_id"].partition("@")[0]
+        chunks = lesson_chunks(chunks, data, actual_section)
+        selected_ids = {c.id for c in chunks}
+        chapter = [
+            p
+            for p in data["points"]
+            if p["section_id"] == actual_section
+            and any(r["chunk_id"] in selected_ids for r in p["source_refs"])
+        ]
+        if not chapter:
+            raise AppError("所选范围没有可学习知识点（目录或出版信息已排除）。")
         chapter_keys = {p["key"] for p in chapter}
         context_keys = {
             e["source"]
@@ -529,6 +559,7 @@ class BookLearning:
 
             def validate(value, batch=batch, selected=selected):
                 errors = quality_report(value, batch, structure_only=True)["errors"]
+                errors.extend(teaching_errors(value, batch, data["regions"]))
                 mapped = {k for p in value.points for k in p.knowledge_keys}
                 expected = {p["key"] for p in selected}
                 if expected - mapped:
@@ -545,7 +576,8 @@ class BookLearning:
                 {
                     "chunks": [c.model_dump() for c in batch],
                     "knowledge_points": selected,
-                    "chapter_summary": data["summaries"][link["section_id"]],
+                    "source_regions": [r for r in data["regions"] if r["chunk_id"] in chunk_ids],
+                    "chapter_summary": data["summaries"][actual_section],
                     "prerequisite_knowledge": prerequisite_context,
                     "relations": [
                         e for e in data["relations"] if e["target"] in {p["key"] for p in selected}
@@ -597,6 +629,7 @@ class BookLearning:
                         if source.key != target.key and source.key not in target.prerequisites:
                             target.prerequisites.append(source.key)
         errors = quality_report(structure, chunks, structure_only=True)["errors"]
+        errors.extend(teaching_errors(structure, chunks, data["regions"]))
         if errors:
             self.save_step(
                 owner,
@@ -607,6 +640,7 @@ class BookLearning:
 
             def validate_combined(candidate):
                 issues = quality_report(candidate, chunks, structure_only=True)["errors"]
+                issues.extend(teaching_errors(candidate, chunks, data["regions"]))
                 if {k for p in candidate.points for k in p.knowledge_keys} != known_keys:
                     issues.append("章节知识点必须完整覆盖，不能增加或删除。")
                 return issues
@@ -619,6 +653,9 @@ class BookLearning:
                 {
                     "chunks": [c.model_dump() for c in chunks],
                     "knowledge_points": chapter,
+                    "source_regions": [
+                        r for r in data["regions"] if r["section_id"] == actual_section
+                    ],
                     "previous": structure.model_dump(),
                     "errors": errors,
                     "relations": data["relations"],
@@ -660,7 +697,7 @@ class BookLearning:
                     "chapter_objectives": [
                         {"key": o.key, "description": o.description} for o in objective_list
                     ],
-                    "chapter_summary": data["summaries"][link["section_id"]],
+                    "chapter_summary": data["summaries"][actual_section],
                     "prerequisite_knowledge": prerequisite_context,
                     "prerequisites": [
                         o.model_dump()

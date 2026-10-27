@@ -17,6 +17,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .book_learning import knowledge_key
 from .book_models import KnowledgePoint, Navigation, NavigationItem, Relation
+from .extraction_models import PIPELINE
 from .models import AppError, Book, Chunk, Section
 from .storage import Store, now
 
@@ -35,6 +36,7 @@ class IndexInfo(BaseModel):
     id: str
     created_at: str
     status: Literal["ready", "building"]
+    pipeline: str | None = None
 
 
 class Catalog(BaseModel):
@@ -72,6 +74,8 @@ class ChapterView(BaseModel):
     coverage: list[Coverage] = Field(default_factory=list)
     coverage_available: bool = False
     read_at: str = Field(default_factory=now)
+    quality: Literal["pending", "reviewed", "legacy"] = "pending"
+    exclusions: list[dict] = Field(default_factory=list)
 
 
 class PairView(BaseModel):
@@ -119,7 +123,7 @@ class Reader:
         if "book_indexes" not in self.tables:
             return []
         rows = self.rows(
-            "SELECT id,created_at,status FROM book_indexes WHERE book_id=? "
+            "SELECT id,created_at,status,data FROM book_indexes WHERE book_id=? "
             "ORDER BY created_at DESC,id DESC",
             (book_id,),
         )
@@ -129,14 +133,23 @@ class Reader:
                 r["index_id"]: r["status"]
                 for r in self.rows("SELECT index_id,status FROM index_content_state")
             }
-        return [IndexInfo(**{**r, "status": states.get(r["id"], r["status"])}) for r in rows]
+        return [
+            IndexInfo(
+                **{
+                    **r,
+                    "status": states.get(r["id"], r["status"]),
+                    "pipeline": json.loads(r["data"]).get("pipeline"),
+                }
+            )
+            for r in rows
+        ]
 
     def content(self, book_id, index_id):
         indexes = self.indexes(book_id)
         selected = (
             next((i for i in indexes if i.id == index_id), None)
             if index_id
-            else (indexes[0] if indexes else None)
+            else next((i for i in indexes if i.pipeline == PIPELINE), None)
         )
         if index_id and not selected:
             raise HTTPException(404, "索引不存在或不属于此教材。")
@@ -153,6 +166,43 @@ class Reader:
             else []
         )
         if selected.status == "ready":
+            return selected, data, steps
+        if selected.pipeline == PIPELINE:
+            metadata = data
+            data = {
+                "points": [],
+                "items": [],
+                "summaries": {},
+                "relations": [],
+                "regions": [],
+                "reviewed_sections": [],
+            }
+            if metadata.get("base_index"):
+                base = json.loads(
+                    self.rows(
+                        "SELECT data FROM book_indexes WHERE id=?", (metadata["base_index"],)
+                    )[0]["data"]
+                )
+                rebuilt = metadata["rebuild_section"]
+                data["points"] = [p for p in base["points"] if p["section_id"] != rebuilt]
+                keys = {p["key"] for p in data["points"]}
+                data["items"] = [it for it in base["items"] if keys.intersection(it["point_keys"])]
+                data["regions"] = [r for r in base["regions"] if r["section_id"] != rebuilt]
+                data["summaries"] = {
+                    s: text for s, text in base["summaries"].items() if s != rebuilt
+                }
+                data["reviewed_sections"] = list(data["summaries"])
+                data["relations"] = [
+                    e for e in base["relations"] if e["source"] in keys and e["target"] in keys
+                ]
+            for row in steps:
+                if row["step"].endswith(f":{PIPELINE}:complete"):
+                    value = json.loads(row["data"])
+                    for key in ("points", "items"):
+                        data[key].extend(value[key])
+                    data["reviewed_sections"].append(row["step"].split(":", 1)[0])
+                if row["step"].endswith(f":{PIPELINE}:regions"):
+                    data["regions"].extend(json.loads(row["data"])["regions"])
             return selected, data, steps
         # Only successful extraction checkpoints; summaries are not final until snapshot commit.
         data = {"points": [], "items": [], "summaries": {}, "relations": []}
@@ -303,8 +353,33 @@ def create_app(store: Store, static_dir: Path = STATIC):
                 items=[i for i in data.get("items", []) if keys.intersection(i["point_keys"])],
                 summary=data.get("summaries", {}).get(section_id),
                 saved_batches=sum(
-                    bool(re.fullmatch(r"[^:]+:extract:\d+", s["step"])) for s in chapter_steps
+                    bool(re.fullmatch(r"[^:]+:(?:semantic-v1:)?extract:\d+", s["step"]))
+                    for s in chapter_steps
                 ),
+                quality=(
+                    "legacy"
+                    if selected and selected.pipeline != PIPELINE
+                    else "reviewed"
+                    if selected
+                    and (
+                        selected.status == "ready"
+                        or section_id in data.get("reviewed_sections", [])
+                        or any(s["step"] == f"{section_id}:{PIPELINE}:complete" for s in steps)
+                    )
+                    else "pending"
+                ),
+                exclusions=[
+                    {
+                        **region,
+                        "quote": next(
+                            c.text[region["start"] : region["end"]]
+                            for c in book.chunks
+                            if c.id == region["chunk_id"]
+                        ),
+                    }
+                    for region in data.get("regions", [])
+                    if region["section_id"] == section_id and region["excluded"]
+                ],
                 last_step=last_step,
                 last_error="；".join(failures) or None,
                 coverage=r.coverage(selected.id, section_id) if selected else [],

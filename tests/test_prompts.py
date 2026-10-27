@@ -12,15 +12,16 @@ from teaching_agent.models import AppError, Audit
 BASELINE = json.loads(
     (Path(__file__).parent / "fixtures" / "prompt_baseline.json").read_text(encoding="utf-8")
 )
-OPERATIONS = ("extract", "revise", "revise_patch", "task", "grade")
+OPERATIONS = ("revise", "revise_patch", "task", "grade")
 
 
 @pytest.mark.parametrize("operation", OPERATIONS)
 def test_messages_match_pre_migration_baseline(operation, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    assert ModelOperations.messages(
-        operation, '{"sample":"answer"}', '{"type":"object"}'
-    ) == BASELINE[operation]
+    assert (
+        ModelOperations.messages(operation, '{"sample":"answer"}', '{"type":"object"}')
+        == BASELINE[operation]
+    )
 
 
 def test_codex_complete_prompt_matches_baseline(monkeypatch):
@@ -40,7 +41,12 @@ def test_codex_complete_prompt_matches_baseline(monkeypatch):
 
     monkeypatch.setattr(gateway, "run", run)
     gateway.call("audit", {"sample": "answer"}, Audit)
-    old_system = (prompt_loader.load_prompt("common") + "\n" + prompt_loader.load_prompt("audit") + "\nJSON Schema:\n")
+    old_system = (
+        prompt_loader.load_prompt("common")
+        + "\n"
+        + prompt_loader.load_prompt("audit")
+        + "\nJSON Schema:\n"
+    )
     schema = json.dumps(strict_schema(Audit.model_json_schema()), ensure_ascii=False)
     body = json.dumps({"sample": "answer"}, ensure_ascii=False)
     assert captured == [old_system + schema + BASELINE["codex_wrapper"] + body]
@@ -68,3 +74,8 @@ def test_loader_preserves_internal_whitespace(monkeypatch, tmp_path):
 def test_unknown_prompt_cannot_select_arbitrary_resource():
     with pytest.raises(AppError, match="未知提示词"):
         prompt_loader.load_prompt("../models.py")
+
+
+def test_legacy_extraction_prompt_is_removed():
+    with pytest.raises(AppError):
+        prompt_loader.load_prompt("extract")

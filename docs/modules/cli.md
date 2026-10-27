@@ -17,7 +17,8 @@ CLI 解析命令、采集回答、渲染公开视图、处理终端信号。当�
 | `teach delete-book BOOK` | 永久删除无关联版本的教材及 PDF 副本；有关联版本时拒绝并列出 ID，保留原始导入文件 |
 | `teach delete-book BOOK --cascade` | 永久清除该教材及全部关联数据，包括已发布版本、会话、作答、评分、全书索引和问答；保留原始 PDF 和其他教材 |
 | `teach outline BOOK` | 查看章节 ID 和物理页范围 |
-| `teach draft BOOK --section SECTION [--pages START:END]` | 自动提取、审核、最多两轮修订及复审；失败用 `draft --resume VERSION`，`--extract-only` 仅提取 |
+| `teach index BOOK [--section SECTION] [--new]` | 新版语义提取；全书或单章重建，省略 --new 恢复相应新版任务 |
+| `teach draft BOOK --section SECTION [--pages START:END]` | 需要新版知识索引，生成教学结构/题目并审核；失败用 `draft --resume VERSION`，`--extract-only` 跳过后续教学审核 |
 | `teach prepare VERSION [--retry]` | 准备已有草稿或恢复任务；--retry 显式开启新一轮任务 |
 | `teach delete VERSION` | 永久删除未发布草稿及其提取批次、事件和后端绑定；拒绝删除已发布版本 |
 | `teach inspect VERSION` | 展示草稿质量问题、引用与待确认项 |

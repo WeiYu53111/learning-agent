@@ -78,9 +78,6 @@ class ModelOperations:
     def book_operation(self, operation, payload, contract):
         return self.call(operation, payload, contract)
 
-    def extract(self, chunks):
-        return self.call("extract", {"chunks": [c.model_dump() for c in chunks]}, Draft)
-
     def audit(self, draft, chunks):
         return self.call(
             "audit",

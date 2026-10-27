@@ -17,6 +17,7 @@ export type Index = {
   id: string;
   created_at: string;
   status: "ready" | "building";
+  pipeline?: string | null;
 };
 export type Point = {
   key: string;
@@ -44,6 +45,14 @@ export type Coverage = {
   last_error: string | null;
 };
 export type Chapter = {
+  quality?: "pending" | "reviewed" | "legacy";
+  exclusions?: {
+    chunk_id: string;
+    start: number;
+    end: number;
+    reason: string;
+    quote: string;
+  }[];
   section: Section;
   index: Index | null;
   source: "snapshot" | "checkpoints" | "original";

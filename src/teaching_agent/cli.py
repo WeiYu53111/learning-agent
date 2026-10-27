@@ -136,6 +136,7 @@ def parser():
     command = sub.add_parser("index", help="梳理全书知识结构，可恢复")
     command.add_argument("book")
     command.add_argument("--new", action="store_true", help="创建新的知识结构版本")
+    command.add_argument("--section", help="只重建指定章节；省略则处理全书")
     command = sub.add_parser("learn", help="按章两阶段准备并开始学习")
     command.add_argument("book")
     command.add_argument("--section", required=True)
@@ -818,7 +819,7 @@ def dispatch(app, args):
         print(f"下一步：teach index {book.id}；或直接 teach ask {book.id} --text '问题'")
     elif command == "index":
         with DraftProgress() as progress:
-            result = app.library.index(args.book, progress, new=args.new)
+            result = app.library.index(args.book, progress, new=args.new, section_id=args.section)
         print(f"知识结构：{result['id']}；查看：teach outline {args.book}")
     elif command == "learn":
         with DraftProgress() as progress:

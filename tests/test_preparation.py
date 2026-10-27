@@ -257,7 +257,9 @@ def test_extract_only_then_resume_complete_flow(app, draft_id, monkeypatch):
     assert main(["--data-dir", str(app.store.root), "draft", book_id, "--extract-only"]) == 0
     target = next(r["id"] for r in app.store.rows("SELECT id FROM versions") if r["id"] != draft_id)
     assert app.preparation(target) is None
-    monkeypatch.setattr(DemoGateway, "extract", lambda *args: pytest.fail("already extracted"))
+    monkeypatch.setattr(
+        DemoGateway, "book_operation", lambda *args: pytest.fail("already extracted")
+    )
     assert main(["--data-dir", str(app.store.root), "draft", "--resume", target]) == 0
     assert app.preparation(target)["phase"] == "ready"
     assert app.version(target)[0]["status"] == "draft"

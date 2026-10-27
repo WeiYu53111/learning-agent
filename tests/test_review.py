@@ -84,11 +84,11 @@ def test_draft_batches_survive_failure(app, tmp_path):
     make_pdf(path)
     book = app.import_pdf(path, demo=True)
     identifier = app.create_draft(book.id, "s1")
-    original = app.injected_gateway.extract
-    app.injected_gateway.extract = lambda chunks: (_ for _ in ()).throw(AppError("离线失败"))
+    original = app.injected_gateway.book_operation
+    app.injected_gateway.book_operation = lambda *args: (_ for _ in ()).throw(AppError("离线失败"))
     with pytest.raises(AppError):
         app.build_draft(identifier)
     assert app.version(identifier)[0]["data"] == "{}"
-    app.injected_gateway.extract = original
+    app.injected_gateway.book_operation = original
     app.build_draft(identifier)
     assert app.version(identifier)[0]["revision"] == 1

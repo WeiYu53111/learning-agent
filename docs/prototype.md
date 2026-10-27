@@ -27,7 +27,9 @@
 
 ## 1. 先审核章节，再开始教学
 
-流程：本地导入 → 选择章节或页范围 → 生成草稿 → 程序校验 → 模型审核 → 最多两轮自动修订及复审 → 确认学习范围 → 发布 → 教学。
+2026-10-27 起只执行 `semantic-v1` 知识提取：先运行 `teach index BOOK`，再 `learn` 或 `draft`。旧的一次性 `extract` 操作已删除，旧未完成提取不能恢复；旧数据可历史查看。全书强制重建使用 `index BOOK --new`，按章重建使用 `index BOOK --section SECTION --new`（需新版全书基线），断点恢复省略 `--new`。完整规则与验收范围见[新版提取计划](plans/knowledge-extraction.md)。
+
+流程：本地导入 → 新版语义知识索引 → 选择章节或页范围 → 分阶段生成教学草稿 → 程序校验 → 模型审核 → 最多两轮自动修订及复审 → 确认学习范围 → 发布 → 教学。
 
 `draft` 默认执行完整准备流程，`--extract-only` 仅提取。已有草稿用 `prepare VERSION`；该命令及 `draft --resume VERSION` 从已保存阶段继续，修订后复审失败不重复修订。普通恢复不重置轮数，`prepare VERSION --retry` 显式开启新任务。所有意见均尝试修复，两轮后仅剩 warning 可以确认，仍有程序错误或 error 则暂停。进度覆盖提取、审核、修订、复审及保存，长调用每 15 秒报告当前阶段和耗时。准备完成后交互终端当场询问是否开始；非交互执行不发布，稍后可用 `start VERSION` 确认。
 
@@ -104,7 +106,7 @@ teach reassess ATTEMPT --reason "原评分误解了回答，重新复核"
 
 提取分批保存检查点，失败后用 `draft --resume VERSION` 恢复。各批 key 加前缀合并，跨批重复、先修关系与整体顺序需要章级审核校正。
 
-结构化提取结果若未通过原文引用或覆盖等业务检查，会保存为 `batch_rejected` 事件，并携带具体错误调用一次 `revise` 校正；仍失败则停止。恢复时优先校正已保存候选，不重复提取该批。只有重新校验通过后才写入成功批次。每批每次执行最多一次业务校正调用，它独立于各后端自身的传输重试预算。旧版本未保存的失败候选无法找回，首次恢复仍需重新提取。
+新版结构化提取若未通过引用或区域覆盖检查，在 `book_steps` 保存带 `:rejected` 后缀的候选，并携带错误再调用一次相同操作；仍失败则暂停。传输失败保留先前候选，恢复时继续校正；旧 `draft_batches` 不再参与提取。语义审核另有一次定向修订及复审额度，复审仍失败则保留结果并要求新建任务，不循环修订。
 
 HTTP 模型网关使用 `/chat/completions`，要求符合 JSON Schema 的完整 JSON，拒绝额外字段、重复 JSON key 和非有限数值，业务层检查原文引用。单次操作最多 4 次 HTTP 请求，包括最多 2 次网络重试、1 次格式修复，并受时限约束。显式恢复开启新的请求预算。Codex 后端通过子进程传递相同教学任务，使用已有登录；其配置、超时和代理行为见[后端说明](backends.md)。
 
@@ -139,7 +141,7 @@ HTTP 模型网关使用 `/chat/completions`，要求符合 JSON Schema 的完整
 | `outline BOOK` | 查看章节 ID 和物理页范围 |
 | `draft BOOK --section SECTION [--pages START:END]` | 自动提取、审核修订和复审；默认章节为 `s1`，--extract-only 仅提取 |
 | `prepare VERSION [--retry]` | 准备已有草稿或恢复任务；--retry 显式开启新任务 |
-| `draft --resume VERSION` | 继续尚未完成的分批提取 |
+| `draft --resume VERSION` | 恢复新版索引对应的教学准备，不恢复旧提取流程 |
 | `drafts` | 按创建时间从新到旧展示教材文件名、章节标题、PDF 页范围、中文状态、审核待处理数量、版本 ID 和下一步命令；包括已发布版本 |
 | `inspect VERSION` | 查看知识清单、顺序、代表题及审核状态 |
 | `source VERSION [CHUNK]` | 查看范围内全部文本或指定片段 |

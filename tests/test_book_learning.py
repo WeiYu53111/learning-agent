@@ -456,7 +456,7 @@ def test_relation_candidates_are_bounded_and_find_cross_chapter_terms():
 
 
 @pytest.mark.parametrize("with_edge", [True, False])
-def test_index_reuses_legacy_relation_results_including_empty(app, book_id, with_edge):
+def test_index_does_not_reuse_legacy_relation_results(app, book_id, with_edge):
     index = app.library.index(book_id)
     points = json.loads(index["data"])["points"]
     edges = (
@@ -470,12 +470,9 @@ def test_index_reuses_legacy_relation_results_including_empty(app, book_id, with
             "DELETE FROM book_steps WHERE owner_id=? AND step LIKE 'relations_v2:%'", (index["id"],)
         )
     app.library.save_step(index["id"], "relations:0:0", {"relations": edges})
-    app.injected_gateway.book_operation = lambda *args: pytest.fail("不应再次调用模型")
     restored = app.library.index(book_id)
-    assert json.loads(restored["data"])["relations"] == edges
-    plan = app.library.step(index["id"], "relations_v2:plan")
-    assert plan["batches"] == []
-    assert plan["legacy_steps"] == 1
+    assert json.loads(restored["data"])["relations"] == []
+    assert app.library.step(index["id"], "relations_v2:plan")["candidate_count"] > 0
 
 
 def test_relation_batches_resume_without_repeating_saved_requests(app, book_id, monkeypatch):

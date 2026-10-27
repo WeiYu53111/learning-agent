@@ -52,14 +52,15 @@ def test_ready_partial_and_rejected_checkpoints(app, client, book_id):
     url = f"/api/books/{book_id}/sections/s1"
     result = client.get(url, params={"index": ready["id"]}).json()
     assert result["source"] == "snapshot" and result["points"] and result["summary"]
-    step = app.library.step(ready["id"], "s1:extract:0")
+    step = app.library.step(ready["id"], "s1:semantic-v1:complete")
     with app.store.connect() as conn:
         conn.execute(
             "INSERT INTO book_indexes VALUES(?,?,?,?,?)",
-            ("partial", book_id, "building", "{}", now()),
+            ("partial", book_id, "building", dumps({"pipeline": "semantic-v1"}), now()),
         )
         conn.execute(
-            "INSERT INTO book_steps VALUES(?,?,?)", ("partial", "s1:extract:0", dumps(step))
+            "INSERT INTO book_steps VALUES(?,?,?)",
+            ("partial", "s1:semantic-v1:complete", dumps(step)),
         )
         conn.execute(
             "INSERT INTO book_steps VALUES(?,?,?)",
@@ -72,10 +73,51 @@ def test_ready_partial_and_rejected_checkpoints(app, client, book_id):
     partial = client.get(url, params={"index": "partial"}).json()
     assert partial["points"] == result["points"]
     assert partial["source"] == "checkpoints" and partial["summary"] is None
-    assert partial["saved_batches"] == 1
+    assert partial["quality"] == "reviewed"
     assert not client.get(f"/api/books/{book_id}/sections/s2?index=partial").json()["points"]
     assert client.get(url + "?index=missing").status_code == 404
     assert client.get(url, params={"index": ready["id"]}).json()["source"] == "snapshot"
+
+
+def test_new_raw_extraction_is_not_shown_as_reviewed(app, client, book_id):
+    ready = app.library.index(book_id)
+    raw = app.library.step(ready["id"], "s1:semantic-v1:extract:0")
+    with app.store.connect() as conn:
+        conn.execute(
+            "INSERT INTO book_indexes VALUES(?,?,?,?,?)",
+            ("unreviewed", book_id, "building", dumps({"pipeline": "semantic-v1"}), now()),
+        )
+        conn.execute(
+            "INSERT INTO book_steps VALUES(?,?,?)",
+            ("unreviewed", "s1:semantic-v1:extract:0", dumps(raw)),
+        )
+    view = client.get(f"/api/books/{book_id}/sections/s1?index=unreviewed").json()
+    assert view["quality"] == "pending"
+    assert view["points"] == []
+    assert view["saved_batches"] == 1
+
+
+def test_pending_section_rebuild_still_shows_unchanged_chapters(app, client, book_id):
+    ready = app.library.index(book_id)
+    before = client.get(f"/api/books/{book_id}/sections/s1?index={ready['id']}").json()
+    with app.store.connect() as conn:
+        conn.execute(
+            "INSERT INTO book_indexes VALUES(?,?,?,?,?)",
+            (
+                "partial_rebuild",
+                book_id,
+                "building",
+                dumps(
+                    {"pipeline": "semantic-v1", "base_index": ready["id"], "rebuild_section": "s2"}
+                ),
+                now(),
+            ),
+        )
+    view = client.get(f"/api/books/{book_id}/sections/s1?index=partial_rebuild").json()
+    assert view["points"] == before["points"]
+    assert view["quality"] == "reviewed"
+    pending = client.get(f"/api/books/{book_id}/sections/s2?index=partial_rebuild").json()
+    assert pending["points"] == [] and pending["quality"] == "pending"
 
 
 def test_relation_direction_coverage_and_version_isolation(app, client, book_id):
@@ -150,7 +192,7 @@ def test_web_command_does_not_initialize_or_load_backend(app, monkeypatch):
 def test_static_assets_and_no_filesystem_access(tmp_path):
     static = tmp_path / "static"
     (static / "assets").mkdir(parents=True)
-    (static / "index.html").write_text("<h1>工作台</h1>")
+    (static / "index.html").write_text("<h1>工作台</h1>", encoding="utf-8")
     (static / "assets" / "app.js").write_text("/* app */")
     client = TestClient(create_app(Store(tmp_path / "missing"), static))
     assert "工作台" in client.get("/").text

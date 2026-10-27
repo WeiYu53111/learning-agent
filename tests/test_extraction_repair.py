@@ -15,68 +15,64 @@ def prepare(app, tmp_path):
     path = tmp_path / "repair.pdf"
     make_pdf(path)
     book = app.import_pdf(path, demo=True)
-    version = app.create_draft(book.id, "s1")
-    chunks = app.version(version)[2]
-    healthy = app.injected_gateway.extract(chunks)
-    invalid = healthy.model_copy(deep=True)
-    invalid.points[0].objectives[0].source_refs[0].quote = "列表"
-    return version, healthy, invalid
+    return book.id, app.injected_gateway.book_operation
 
 
 def test_invalid_reference_is_repaired_before_batch_saved(app, tmp_path):
-    version, healthy, invalid = prepare(app, tmp_path)
-    app.injected_gateway.extract = lambda chunks: invalid
-    instructions = []
+    book, original = prepare(app, tmp_path)
+    requests = []
 
-    def revise(candidate, chunks, instruction):
-        instructions.append(instruction)
-        return healthy
+    def operation(op, payload, contract):
+        value = original(op, payload, contract)
+        if op == "book_index":
+            requests.append(payload)
+            if len(requests) == 1:
+                value.points[0].source_refs[0].quote = "列表"
+        return value
 
-    app.injected_gateway.revise = revise
-    messages = []
-    app.build_draft(version, progress=messages.append)
-    assert any("等待模型自动校正" in message for message in messages)
-    assert any("校验自动校正结果" in message for message in messages)
-    assert len(instructions) == 1
-    assert "引用不唯一" in instructions[0] and "列表" in instructions[0]
-    assert app.version(version)[0]["data"] != "{}"
-    assert len(app.store.rows("SELECT * FROM draft_batches")) == 1
+    app.injected_gateway.book_operation = operation
+    app.library.index(book)
+    assert len(requests) == 2
+    assert requests[1]["previous"]
+    assert any("引用不唯一" in error for error in requests[1]["errors"])
+    assert app.store.rows("SELECT * FROM draft_batches") == []
 
 
 def test_failed_repair_resumes_candidate_without_reextracting(app, tmp_path):
-    version, healthy, invalid = prepare(app, tmp_path)
-    app.injected_gateway.extract = lambda chunks: invalid
-    calls = []
+    book, original = prepare(app, tmp_path)
+    requests = []
 
-    def fail(*args):
-        calls.append(1)
-        raise AppError("temporary network failure")
+    def operation(op, payload, contract):
+        if op == "book_index":
+            requests.append(payload)
+            if len(requests) == 2:
+                raise AppError("temporary network failure")
+        value = original(op, payload, contract)
+        if op == "book_index" and len(requests) == 1:
+            value.points[0].source_refs[0].quote = "列表"
+        return value
 
-    app.injected_gateway.revise = fail
+    app.injected_gateway.book_operation = operation
     with pytest.raises(AppError):
-        app.build_draft(version)
-    assert len(calls) == 1
-    assert app.store.rows("SELECT * FROM draft_batches") == []
-    app.injected_gateway.extract = lambda *args: pytest.fail("must reuse saved candidate")
-    app.injected_gateway.revise = lambda *args: healthy
-    app.build_draft(version)
-    assert app.version(version)[0]["data"] != "{}"
+        app.library.index(book)
+    app.library.index(book)
+    assert len(requests) == 3
+    assert requests[2]["previous"] == requests[1]["previous"]
 
 
 def test_still_invalid_repair_is_bounded_and_cannot_publish(app, tmp_path):
-    version, healthy, invalid = prepare(app, tmp_path)
-    app.injected_gateway.extract = lambda chunks: invalid
+    book, original = prepare(app, tmp_path)
     calls = []
 
-    def unchanged(*args):
-        calls.append(1)
-        return invalid
+    def operation(op, payload, contract):
+        value = original(op, payload, contract)
+        if op == "book_index":
+            calls.append(payload)
+            value.points[0].source_refs[0].quote = "不存在的原文"
+        return value
 
-    app.injected_gateway.revise = unchanged
-    with pytest.raises(AppError, match="候选已保存"):
-        app.build_draft(version)
-    assert len(calls) == 1
-    assert app.version(version)[0]["data"] == "{}"
-    assert app.store.rows("SELECT * FROM draft_batches") == []
-    with pytest.raises(AppError):
-        app.publish(version)
+    app.injected_gateway.book_operation = operation
+    with pytest.raises(AppError, match="暂停"):
+        app.library.index(book)
+    assert len(calls) == 2
+    assert app.library.active(book) is None

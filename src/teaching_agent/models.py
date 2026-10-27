@@ -40,6 +40,7 @@ class Book(Contract):
     chunks: list[Chunk]
     unavailable_pages: list[int] = Field(default_factory=list)
     demo: bool = False
+    bookmarks: list[Section] = Field(default_factory=list)
 
 
 class Rubric(Contract):

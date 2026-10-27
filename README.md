@@ -42,6 +42,10 @@ npm run test:e2e
 
 ## 全书梳理、按章学习与自由提问
 
+知识提取已统一到新版语义流程：先识别目录/出版信息与正文，再按主题组织批次、提取和审核知识点，最后处理跨批边界。旧提取入口和旧检查点不再执行，历史数据保留。只有旧索引时，运行 `teach index BOOK` 从原文重新构建；新掌握状态不继承旧版。
+
+`teach index BOOK --new` 强制全量重建；已有新版全书索引后，可用 `teach index BOOK --section SECTION --new` 仅重建一章，失败后去掉 `--new` 恢复。其他章节复用，涉及目标章的知识关系重新分析。真实教材的 `draft` 要求先完成新版索引，避免隐式全书处理。详见[提取优化与验收计划](docs/plans/knowledge-extraction.md)。
+
 直接运行 `teach` 或 `teach --help` 可查看中文命令导航、分组说明和快速开始步骤；运行 `teach learn --help` 等可查看具体参数及示例。
 
 ```bash

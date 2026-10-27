@@ -118,12 +118,10 @@ def test_cli_draft_progress(app, draft_id, capsys):
     assert main(["--data-dir", str(app.store.root), "draft", book_id]) == 0
     output = capsys.readouterr().err
     for message in (
-        "第 1/1 批",
-        "PDF 页",
-        "等待模型提取",
-        "校验提取结果",
+        "structure:0",
+        "等待模型",
         "已保存",
-        "草稿提取完成",
+        "章节教学内容已保存",
     ):
         assert message in output
 
@@ -131,9 +129,9 @@ def test_cli_draft_progress(app, draft_id, capsys):
 def test_resume_reports_cached_batch_without_model_call(app, draft_id):
     with app.store.connect() as conn:
         conn.execute("UPDATE versions SET data='{}' WHERE id=?", (draft_id,))
-    app.injected_gateway.extract = lambda _: pytest.fail("must reuse cached batch")
+    app.injected_gateway.book_operation = lambda *args: pytest.fail("must reuse cached batch")
     messages = []
     app.build_draft(draft_id, progress=messages.append)
     assert any("复用已保存结果" in message for message in messages)
     assert not any("等待模型提取" in message for message in messages)
-    assert messages[-1] == "草稿提取完成"
+    assert messages[-1] == "章节教学内容已保存，继续完整审核。"

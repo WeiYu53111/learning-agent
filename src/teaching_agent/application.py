@@ -85,6 +85,20 @@ class Application:
         row = self.store.get("versions", identifier)
         book = self.book(row["book_id"])
         chunks = self.section_chunks(book, row["section_id"])
+        if self.library.available():
+            links = self.store.rows(
+                "SELECT index_id FROM lesson_links WHERE version_id=?", (identifier,)
+            )
+            if links:
+                from .extraction import is_current, lesson_chunks
+
+                index = self.store.rows(
+                    "SELECT * FROM book_indexes WHERE id=?", (links[0]["index_id"],)
+                )[0]
+                if is_current(index):
+                    chunks = lesson_chunks(
+                        chunks, json.loads(index["data"]), row["section_id"].partition("@")[0]
+                    )
         return row, book, chunks
 
     @staticmethod
@@ -263,148 +277,44 @@ class Application:
         return identifier
 
     def build_draft(self, identifier, progress=None):
-        def report_progress(message):
-            if progress is not None:
-                progress(message)
-
-        row, book, chunks = self.version(identifier)
+        emit = progress or (lambda _: None)
+        row, book, _ = self.version(identifier)
         if row["status"] != "draft" or row["data"] != "{}":
-            raise AppError("草稿已完成提取；请使用 revise 或编辑，而不是覆盖。")
-        if self.library.available() and self.store.rows(
-            "SELECT version_id FROM lesson_links WHERE version_id=?", (identifier,)
-        ):
-            return self.library.build_lesson(identifier, report_progress)
-        batches = self.batches(chunks)
-        cached = {
-            r["position"]: r["data"]
-            for r in self.store.rows(
-                "SELECT * FROM draft_batches WHERE version_id=?", (identifier,)
-            )
-        }
-        partials = []
-        report_progress(
-            f"共 {len(chunks)} 个文本块，分为 {len(batches)} 批；已保存 {len(cached)} 批"
-        )
-        for position, batch in enumerate(batches):
-            label = (
-                f"第 {position + 1}/{len(batches)} 批（PDF 页 {batch[0].page}–{batch[-1].page}）"
-            )
-            if position in cached:
-                report_progress(f"{label}：复用已保存结果")
-                partial = Draft.model_validate_json(cached[position])
-            else:
-                gateway = self.gateway(book, identifier)
-                rejected = self.store.rows(
-                    "SELECT data FROM events WHERE owner_id=? AND kind='batch_rejected' "
-                    "ORDER BY id DESC",
-                    (identifier,),
+            raise AppError("草稿已完成；请使用 revise 或编辑，而不是覆盖。")
+        links = self.store.rows("SELECT * FROM lesson_links WHERE version_id=?", (identifier,))
+        if not links:
+            index = self.library.active(book.id)
+            if index is None and book.demo:
+                index = self.library.index(book.id, emit)
+            if index is None:
+                raise AppError(f"旧提取入口已废弃，请先完成 teach index {book.id}，再恢复此草稿。")
+            with self.store.connect() as conn:
+                conn.execute(
+                    "INSERT INTO lesson_links VALUES(?,?,?,?)",
+                    (identifier, index["id"], row["section_id"], "{}"),
                 )
-                previous = next(
-                    (
-                        json.loads(r["data"])
-                        for r in rejected
-                        if json.loads(r["data"])["position"] == position
-                    ),
-                    None,
-                )
-                report_progress(
-                    f"{label}：{'恢复已保存候选' if previous else '等待模型提取'}"
-                    f"；后端/模型：{gateway.model}"
-                )
-                partial = (
-                    Draft.model_validate(previous["candidate"])
-                    if previous
-                    else gateway.extract(batch)
-                )
-                report_progress(f"{label}：校验提取结果")
-                report = quality_report(partial, batch)
-                if report["errors"]:
-                    self.save_rejected_batch(identifier, position, partial, report, gateway.model)
-                    report_progress(
-                        f"{label}：发现 {len(report['errors'])} 项错误，等待模型自动校正"
-                    )
-                    partial = gateway.revise(
-                        partial,
-                        batch,
-                        "修复以下程序校验错误，返回完整草稿。仅修改有问题的引用及必要关联；"
-                        "不要重写无关目标。引用必须逐字匹配且在对应chunk内唯一；"
-                        "有重复时扩展连续原文上下文（保留换行），不要猜测第一次出现的位置，"
-                        "也不要删掉目标或内容清单来绕过检查。\n" + "\n".join(report["errors"]),
-                    )
-                    report_progress(f"{label}：校验自动校正结果")
-                    report = quality_report(partial, batch)
-                    if report["errors"]:
-                        self.save_rejected_batch(
-                            identifier, position, partial, report, gateway.model
-                        )
-                        raise AppError(
-                            "本批自动校正后仍未通过校验；候选已保存，恢复时继续校正："
-                            + "；".join(report["errors"][:4])
-                        )
-                with self.store.connect() as conn:
-                    conn.execute(
-                        "INSERT INTO draft_batches VALUES(?,?,?)",
-                        (identifier, position, partial.model_dump_json()),
-                    )
-                    self.store.event(
-                        conn,
-                        identifier,
-                        "batch_extracted",
-                        {
-                            "position": position,
-                            "model": gateway.model,
-                        },
-                    )
-                report_progress(f"{label}：已保存")
-            value = partial.model_dump()
-            prefix = f"b{position}_"
-            for point in value["points"]:
-                point["key"] = prefix + point["key"]
-                for obj in point["objectives"]:
-                    obj["key"] = prefix + obj["key"]
-                    obj["prerequisites"] = [prefix + k for k in obj["prerequisites"]]
-                    obj["sample_question"]["targeted_misconception_codes"] = [
-                        prefix + k for k in obj["sample_question"]["targeted_misconception_codes"]
-                    ]
-            for item in value["content_items"]:
-                item["key"] = prefix + item["key"]
-                item["objective_keys"] = [prefix + k for k in item["objective_keys"]]
-            for misconception in value["misconceptions"]:
-                misconception["code"] = prefix + misconception["code"]
-                misconception["objective_keys"] = [
-                    prefix + k for k in misconception["objective_keys"]
-                ]
-            partials.append(value)
-        if not partials:
-            raise AppError("没有可提取内容。")
-        combined = {
-            field: [item for part in partials for item in part[field]]
-            for field in ["points", "content_items", "misconceptions", "notes"]
-        }
-        if len(partials) > 1:
-            combined["notes"].append("多批提取：请人工检查跨批重复和前置关系。")
-        report_progress("合并各批结果并保存草稿")
-        self.save_draft(identifier, Draft.model_validate(combined), "分批提取完成")
-        report_progress("草稿提取完成")
-
-    def save_rejected_batch(self, identifier, position, partial, report, model):
-        with self.store.connect() as conn:
-            self.store.event(
-                conn,
-                identifier,
-                "batch_rejected",
-                {
-                    "position": position,
-                    "candidate": partial.model_dump(),
-                    "errors": report["errors"],
-                    "model": model,
-                },
-            )
+        self.library.build_lesson(identifier, emit)
 
     def save_draft(self, identifier, draft: Draft, reason, preparation=None):
-        row, _, _ = self.version(identifier)
+        row, book, _ = self.version(identifier)
         if row["status"] != "draft":
             raise AppError("已发布内容不可修改，请先 clone 创建新草稿。")
+        if self.library.available():
+            links = self.store.rows(
+                "SELECT index_id FROM lesson_links WHERE version_id=?", (identifier,)
+            )
+            if links:
+                from .extraction import is_current, teaching_errors
+
+                index = self.store.rows(
+                    "SELECT * FROM book_indexes WHERE id=?", (links[0]["index_id"],)
+                )[0]
+                if is_current(index):
+                    errors = teaching_errors(
+                        draft, book.chunks, json.loads(index["data"])["regions"]
+                    )
+                    if errors:
+                        raise AppError("；".join(errors))
         with self.store.connect() as conn:
             conn.execute(
                 "UPDATE versions SET data=?,revision=revision+1,audit=NULL,"

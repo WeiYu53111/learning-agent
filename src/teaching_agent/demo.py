@@ -52,7 +52,7 @@ class DemoGateway:
 
     model = "offline-demo-keyword-grader"
 
-    def extract(self, chunks):
+    def fixture_lesson(self, chunks):
         points, items = [], []
         for index, chunk in enumerate(chunks):
             lesson_index = chunk.page - 1

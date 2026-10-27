@@ -191,7 +191,10 @@ export default function App() {
     queryFn: () => get<Catalog>(`/books/${encode(book)}`),
     enabled: !!book,
   });
-  const index = params.get("index") ?? catalog.data?.indexes[0]?.id ?? "";
+  const index =
+    params.get("index") ??
+    catalog.data?.indexes.find((i) => i.pipeline === "semantic-v1")?.id ??
+    "";
   const section = params.get("section") ?? catalog.data?.sections[0]?.id ?? "";
   const key = params.get("point") ?? "";
   const chapter = useQuery({
@@ -352,6 +355,7 @@ export default function App() {
                 </option>
                 {catalog.data?.indexes.map((i) => (
                   <option key={i.id} value={i.id}>
+                    {i.pipeline !== "semantic-v1" ? "历史旧版 · " : ""}
                     {i.status === "ready" ? "内容就绪" : "提取中"} ·{" "}
                     {new Date(i.created_at).toLocaleString("zh-CN")} ·{" "}
                     {i.id.slice(-6)}
@@ -431,6 +435,31 @@ export default function App() {
                         : "尚未创建知识索引，可先浏览原文。使用 teach index 提取后刷新。")}
                   </p>
                 </section>
+                {chapter.data.quality === "legacy" && (
+                  <p className="notice">
+                    旧版知识结构，仅供历史查看；新学习请重新提取。
+                  </p>
+                )}
+                {chapter.data.quality === "pending" && index && (
+                  <p className="notice">
+                    本章正在准备或审核，仅展示已完成章节审核的知识点。
+                  </p>
+                )}
+                {!!chapter.data.exclusions?.length && (
+                  <details className="coverage">
+                    <summary>
+                      未作为知识提取的内容（{chapter.data.exclusions.length}）
+                    </summary>
+                    {chapter.data.exclusions.map((item) => (
+                      <div key={`${item.chunk_id}:${item.start}`}>
+                        <p>{item.reason}</p>
+                        <blockquote style={{ whiteSpace: "pre-wrap" }}>
+                          {item.quote}
+                        </blockquote>
+                      </div>
+                    ))}
+                  </details>
+                )}
                 <details className="coverage">
                   <summary>提取状态与关系覆盖</summary>
                   <p>

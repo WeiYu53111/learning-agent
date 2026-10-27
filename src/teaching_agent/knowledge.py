@@ -48,8 +48,12 @@ def parse_pdf(path: Path) -> Book:
                 )
                 offset = end
             for line in text.splitlines()[:8]:
-                if re.match(r"^(第[一二三四五六七八九十\d]+章|Chapter\s+\d+)", line):
-                    headings.append((1, line.strip(), page_index + 1))
+                if re.match(r"^(第\s*[一二三四五六七八九十\d]+\s*章|Chapter\s+\d+)", line):
+                    if re.search(r"[.．…·]{2,}\s*\d+\s*$", line):
+                        continue
+                    title = line.strip()
+                    if not any(h[1] == title for h in headings):
+                        headings.append((1, title, page_index + 1))
                     break
         if not chunks:
             raise AppError("没有可读取文本；第一版不支持 OCR。")
@@ -86,6 +90,18 @@ def parse_pdf(path: Path) -> Book:
             sha256=hashlib.sha256(raw).hexdigest(),
             page_count=doc.page_count,
             sections=sections,
+            bookmarks=[
+                Section(
+                    id=f"bookmark{i}",
+                    title=title,
+                    level=level,
+                    start_page=page,
+                    end_page=page,
+                    chunk_ids=[],
+                )
+                for i, (level, title, page) in enumerate(toc)
+                if 1 <= page <= doc.page_count
+            ],
             chunks=chunks,
             unavailable_pages=unavailable,
         )
