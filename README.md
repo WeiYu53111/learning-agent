@@ -5,6 +5,41 @@
 完整的[已实现功能清单、命令和实现边界](docs/prototype.md)已按当前代码整理。支持全书知识梳理、按章两阶段教学准备、用户自报掌握以及教材内 `teach ask` / `/ask` 自由提问。普通输入仍作为当前题目的答案处理；插问请使用 `/ask 问题`。
 
 
+## Web 内容与关联知识检查
+
+第一版 Web 为本地只读工作台，可查看已保存的原文、章节摘要、内容清单、知识点，以及前置知识、后续依赖和相关知识。支持一跳关系图、跨章跳转、引用高亮、索引切换和阶段结果查看。不会触发模型调用或修改学习数据；关联发现、补充与管理留待后续版本。
+
+在项目根目录安装 Python Web 依赖，再构建 React 前端（构建环境需要 Node.js 20.19+ 或 22.12+，运行时无需 Node.js）：
+
+```bash
+python -m pip install -e ".[web]"
+npm --prefix web ci
+npm --prefix web run build
+teach web
+```
+
+浏览器打开 **http://127.0.0.1:8765**。也可运行 `.venv/bin/python -m teaching_agent web`（macOS/Linux），或 `.venv\Scripts\python.exe -m teaching_agent web`（Windows）。Ctrl+C 停止服务。
+
+```bash
+teach --data-dir PATH web --port 8765
+```
+
+数据目录沿用 CLI 默认值 `data-v2/` 或 `TEACH_DATA_DIR`。没有教材时页面显示导入说明；导入或提取后点击“刷新数据”。Web 不自动迁移数据库。页面状态表示已保存数据，不表示后台任务仍在运行；候选检查完成也不代表知识关系完备。首版原文查看使用已解析文本，不包含 PDF 阅读器或 OCR。
+
+前端开发：保持 `teach web` 在 8765 端口运行，再运行 `npm --prefix web run dev`；Vite 代理 `/api`。验证命令：
+
+```bash
+python -m pip install -e ".[dev,web]"
+python -m pytest -q
+npm --prefix web test
+npm --prefix web run build
+cd web
+npx playwright install chromium --no-shell
+npm run test:e2e
+```
+
+浏览器验收使用临时离线数据库及 8766 端口，不修改真实教材。默认使用项目 `.venv`；测试环境需要绕过代理访问 localhost。方案与验证记录见 [Web 专项计划](docs/plans/web-app.md)。
+
 ## 全书梳理、按章学习与自由提问
 
 直接运行 `teach` 或 `teach --help` 可查看中文命令导航、分组说明和快速开始步骤；运行 `teach learn --help` 等可查看具体参数及示例。
@@ -351,7 +386,7 @@ teach --env-file .env.cli --backend remote_api start VERSION
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.venv\Scripts\python.exe -m pip install -e ".[dev,web]"
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\ruff.exe check src tests
 ```
@@ -368,4 +403,4 @@ python -m venv .venv
 - [领域模型与教学状态机](docs/domain-and-policy.md)：证据、评分和教学策略。
 - [各模块详细设计](docs/modules/README.md)：完整设计契约。
 
-当前接口以原型使用说明和 `teach --help` 为准。暂不支持 Web、OCR、向量数据库或多用户并发写入。
+当前接口以原型使用说明和 `teach --help` 为准。支持本地只读 Web 检查；暂不支持 Web 写操作、OCR、向量数据库或多用户并发写入。

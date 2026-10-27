@@ -10,7 +10,8 @@ requires-python = ">=3.11"
 dependencies = ["pydantic>=2.8,<3", "pymupdf>=1.24,<2", "httpx[socks]>=0.27,<1", "python-dotenv>=1,<2"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9", "ruff>=0.6,<1"]
+dev = ["pytest>=8,<9", "ruff>=0.6,<1", "fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+web = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 
 [project.scripts]
 teach = "teaching_agent.cli:main"
@@ -19,7 +20,7 @@ teach = "teaching_agent.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-teaching_agent = ["prompts/*.txt"]
+teaching_agent = ["prompts/*.txt", "web_static/*", "web_static/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
