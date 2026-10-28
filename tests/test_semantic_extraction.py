@@ -447,3 +447,76 @@ def test_later_draft_edits_cannot_reintroduce_excluded_text(app):
     with pytest.raises(AppError, match="已排除"):
         app.save_draft(version, draft, "test")
     assert app.version(version)[0]["data"] == "{}"
+
+
+@pytest.mark.parametrize("reject_repair", [False, True])
+def test_boundary_failure_repairs_locally_and_resumes(app, reject_repair):
+    book = save_book(app, ["栈的定义", "栈的性质"])
+    calls, _ = classified_gateway(app, {})
+    wrapped = app.injected_gateway.book_operation
+    fail_once = True
+    repairs = []
+
+    def issue(payload, contract):
+        return contract(
+            issues=[
+                dict(
+                    kind="unsupported",
+                    point_keys=[payload["navigation"]["points"][0]["key"]],
+                    description="不要把预告提升为独立知识",
+                    evidence="栈的性质",
+                )
+            ]
+        )
+
+    def operation(op, payload, contract):
+        nonlocal fail_once
+        if op == "source_analysis":
+            value = wrapped(op, payload, contract)
+            for i, r in enumerate(value.regions):
+                r.topic = f"part{i}"
+            return value
+        if op == "boundary_review":
+            return contract(
+                merges=[
+                    dict(
+                        members=payload["candidate_pairs"][0],
+                        title="待修订",
+                        description="定义与性质",
+                        reason="同一概念",
+                    )
+                ]
+            )
+        if op == "extraction_review" and payload.get("evidence_only"):
+            if payload["navigation"]["points"][0]["title"] == "待修订" or reject_repair:
+                return issue(payload, contract)
+            return contract(issues=[])
+        if op == "book_index" and payload.get("instruction"):
+            if fail_once:
+                fail_once = False
+                raise AppError("修订网络中断")
+            repairs.append(payload)
+            value = contract.model_validate(payload["previous"])
+            value.points[0].title = "栈"
+            return value
+        return wrapped(op, payload, contract)
+
+    app.injected_gateway.book_operation = operation
+    with pytest.raises(AppError, match="修订网络中断"):
+        app.library.index(book.id, content_only=True)
+    extracts = sum(op == "book_index" for op, _ in calls)
+    if reject_repair:
+        with pytest.raises(AppError, match="修订后审核仍未通过"):
+            app.library.index(book.id, content_only=True)
+        with pytest.raises(AppError, match="修订后审核仍未通过"):
+            app.library.index(book.id, content_only=True)
+        assert app.library.content_active(book.id) is None
+    else:
+        data = json.loads(app.library.index(book.id, content_only=True)["data"])
+        assert data["points"][0]["title"] == "栈"
+        assert {r["quote"] for it in data["items"] for r in it["source_refs"]} == {
+            "栈的定义",
+            "栈的性质",
+        }
+    assert len(repairs) == 1
+    assert sum(op == "book_index" for op, _ in calls) == extracts

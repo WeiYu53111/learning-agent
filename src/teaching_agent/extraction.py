@@ -459,9 +459,11 @@ class SemanticExtractor:
         for i, point in enumerate(merged):
             if len(grouped[point.key]) < 2:
                 continue
+            if point.key not in {p.key for p in result.points}:
+                continue
             selected_items = [it for it in result.items if point.key in it.point_keys]
             selected_keys = {k for it in selected_items for k in it.point_keys}
-            selected_points = [p for p in merged if p.key in selected_keys]
+            selected_points = [p for p in result.points if p.key in selected_keys]
             report = self.call(
                 prefix + f":boundary-verify:{i}",
                 "extraction_review",
@@ -485,8 +487,64 @@ class SemanticExtractor:
                         "errors": [issue.description for issue in report.issues],
                     },
                 )
-                raise AppError(
-                    "跨批归并审核未通过，未发布索引："
-                    + "；".join(issue.description for issue in report.issues)
+                # Repair only the reviewed neighborhood, preserving every source item.
+                # Saved repair and verification checkpoints also resume older failed runs.
+                previous = Navigation(points=selected_points, items=selected_items)
+                untouched_points = [p for p in result.points if p.key not in selected_keys]
+                untouched_items = [it for it in result.items if it not in selected_items]
+
+                def combine(
+                    value, untouched_points=untouched_points, untouched_items=untouched_items
+                ):
+                    return Navigation(
+                        points=untouched_points + value.points, items=untouched_items + value.items
+                    )
+
+                def validate_repair(value, combine=combine, previous=previous):
+                    combined = combine(value)
+                    errors = navigation_errors(combined, chunks, regions)
+                    errors += preserved_items_errors(previous, value)
+                    if len({it.key for it in combined.items}) != len(combined.items):
+                        errors.append("修订后的内容清单 key 重复。")
+                    return errors
+
+                selected_ids = {
+                    r.chunk_id
+                    for obj in [*selected_points, *selected_items]
+                    for r in obj.source_refs
+                }
+                payload = {
+                    "section": section.title,
+                    "chunks": [c.model_dump() for c in chunks if c.id in selected_ids],
+                    "regions": [r for r in regions if r["chunk_id"] in selected_ids],
+                    "previous": previous.model_dump(),
+                    "errors": [issue.model_dump() for issue in report.issues],
+                    "instruction": "仅修订 previous 中的知识点和清单，不提取其他内容。"
+                    "保留每条清单的原文证据。章节预告保留为背景清单，"
+                    "关联适当的已有知识点，不提升为原文未讲解的独立知识。",
+                }
+                repaired = self.call(
+                    prefix + f":boundary-repair:{i}",
+                    "book_index",
+                    payload,
+                    Navigation,
+                    validate_repair,
                 )
+                verified = self.call(
+                    prefix + f":boundary-reverify:{i}",
+                    "extraction_review",
+                    {
+                        "section": section.title,
+                        "navigation": repaired.model_dump(),
+                        "evidence_only": True,
+                    },
+                    ExtractionReview,
+                    lambda _: [],
+                )
+                if verified.issues:
+                    raise AppError(
+                        "跨批归并修订后审核仍未通过，已保存检查点；请检查问题后使用 --new 重建："
+                        + "；".join(issue.description for issue in verified.issues)
+                    )
+                result = combine(repaired)
         return result
