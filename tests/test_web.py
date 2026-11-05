@@ -178,7 +178,9 @@ def test_legacy_missing_tables_and_missing_relation_endpoint(app, client, book_i
 
 def test_web_command_does_not_initialize_or_load_backend(app, monkeypatch):
     calls = []
-    monkeypatch.setattr("teaching_agent.web.serve", lambda store, port: calls.append((store, port)))
+    monkeypatch.setattr(
+        "teaching_agent.web.serve", lambda store, port, **kw: calls.append((store, port, kw))
+    )
     monkeypatch.setattr(Store, "initialize", lambda _: pytest.fail("unexpected initialize"))
     assert (
         main(
@@ -199,3 +201,25 @@ def test_static_assets_and_no_filesystem_access(tmp_path):
     assert client.get("/assets/app.js").status_code == 200
     assert client.get("/api/unknown").status_code == 404
     assert client.get("/learning.db").status_code == 404
+
+
+def test_extraction_control_origin_and_stop_under_writer_lock(app, client, book_id, monkeypatch):
+    from teaching_agent.extraction_tasks import Tasks
+
+    tasks = Tasks(app.store.root)
+    task = tasks.create(book_id)
+    tasks.update(task, status="running", chapter="s1", block=2, total=30)
+    path = f"/api/books/{book_id}/extraction"
+    with writer_lock(app.store.root):
+        assert client.get(path).json()[0]["block"] == 2
+        denied = client.post(f"{path}/{task}/stop", headers={"origin": "https://evil.example"})
+        assert denied.status_code == 403
+        assert client.post(f"{path}/{task}/stop").json()["status"] == "stopping"
+    assert client.post(f"{path}/missing/stop").status_code == 404
+    calls = []
+    monkeypatch.setattr(
+        "teaching_agent.extraction_tasks.launch", lambda *args: calls.append(args) or "new_task"
+    )
+    assert client.post(path + "?section=s1&new=true").json() == {"id": "new_task"}
+    assert calls[0][1:4] == (book_id, "s1", True)
+    assert client.post(path + "?section=missing").status_code == 404

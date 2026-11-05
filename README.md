@@ -148,6 +148,13 @@ teach --data-dir PATH web --port 8765
 
 Ctrl+C 可暂停任务。已保存结果保留，正在进行且尚未保存的请求可能需要重新执行。一个数据目录同一时间只运行一个写任务。
 
+Web 工作台支持启动抽取、每 2 秒刷新文本块预览、停止、继续和重抽。点击停止后，
+当前模型调用返回即停止，不继续审核或处理下一块。例如第 2 / 30 块停止，继续时保留
+第 1 块，从第 2 块开头重抽并替换临时结果。修改提示词后可以直接继续，修改只作用于
+断点块及后续内容；需要纠正更早的内容时，选择“重抽当前章”或 `index --section SECTION --new`。
+章节全部完成后才进行跨块知识点整合，抽取中的知识点数量不是最终数量。
+Web 启动的任务只整理内容；关系发现仍使用 `teach relations`。
+
 | 中断位置 | 恢复方式 |
 | --- | --- |
 | 知识提取 | 重复原 `index` 命令，不加 `--new` |
@@ -188,7 +195,7 @@ teach --data-dir PATH --env-file .env.cli --backend remote_api learn BOOK --sect
 - `teach.toml` 保存可共享的后端配置；密钥放在环境变量或本地环境文件中。程序仅在指定 `--env-file` 时读取环境文件。
 - 任务保存后端配置快照。修改模型、超时或切换后端后，恢复时显式传入 `--backend NAME` 才更新绑定；已完成结果仍会复用。
 - 模型提取、审核、问答、出题和评分会把相应材料发送给所选服务；PDF 导入和 Web 查看在本地进行。
-- 写入流程支持数据库增量升级至 schema 6；Web 为只读入口，不自动执行迁移。
+- 写入流程支持数据库增量升级至 schema 6；Web 浏览不迁移主库，启动抽取的工作进程按 CLI 写入流程初始化。任务状态保存在独立的 `extraction-control.sqlite` 中。
 
 旧提取索引不会作为新课程的内容入口，历史学习记录保留。需要清理无课程引用的旧索引时，先预览，再决定是否执行：
 
@@ -252,7 +259,7 @@ npm run test:e2e
 | [模型后端](docs/backends.md) | 配置、认证、代理与后端切换 |
 | [知识提取方案](docs/plans/knowledge-extraction.md) | 语义提取、审核及索引策略 |
 | [关系分析方案](docs/relation-on-demand-plan.md) | 候选检查、预算和课程快照 |
-| [Web 方案](docs/plans/web-app.md) | 只读工作台范围与验收 |
+| [Web 方案](docs/plans/web-app.md) | 工作台范围与验收 |
 | [评分规则](docs/grading-issues.md) | 掌握判定、复核与已知问题 |
 | [总体设计](docs/design.md) | 架构与模块职责 |
 

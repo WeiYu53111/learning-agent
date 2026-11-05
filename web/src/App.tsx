@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import Relations from "./Relations";
+import ExtractionPanel from "./ExtractionPanel";
 import type {
   Book,
   Catalog,
@@ -320,6 +321,7 @@ export default function App() {
           <p className="muted">导入完成后，点击右上角刷新。</p>
         </div>
       )}
+      {!!book && <ExtractionPanel book={book} section={section} />}
       {!!books.data?.length && (
         <div className="workspace">
           <nav className="sidebar" aria-label="教材与章节">

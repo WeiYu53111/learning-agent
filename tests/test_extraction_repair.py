@@ -32,13 +32,14 @@ def test_invalid_reference_is_repaired_before_batch_saved(app, tmp_path):
 
     app.injected_gateway.book_operation = operation
     app.library.index(book)
-    assert len(requests) == 2
+    first_block = requests[0]["chunks"][0]["id"]
+    assert len([r for r in requests if r["chunks"][0]["id"] == first_block]) == 2
     assert requests[1]["previous"]
     assert any("引用不唯一" in error for error in requests[1]["errors"])
     assert app.store.rows("SELECT * FROM draft_batches") == []
 
 
-def test_failed_repair_resumes_candidate_without_reextracting(app, tmp_path):
+def test_failed_repair_restarts_unfinished_original_block(app, tmp_path):
     book, original = prepare(app, tmp_path)
     requests = []
 
@@ -56,8 +57,10 @@ def test_failed_repair_resumes_candidate_without_reextracting(app, tmp_path):
     with pytest.raises(AppError):
         app.library.index(book)
     app.library.index(book)
-    assert len(requests) == 3
-    assert requests[2]["previous"] == requests[1]["previous"]
+    first_block = requests[0]["chunks"][0]["id"]
+    assert len([r for r in requests if r["chunks"][0]["id"] == first_block]) == 3
+    assert "previous" not in requests[2]
+    assert requests[2]["chunks"] == requests[0]["chunks"]
 
 
 def test_still_invalid_repair_is_bounded_and_cannot_publish(app, tmp_path):

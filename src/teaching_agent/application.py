@@ -229,6 +229,9 @@ class Application:
                     conn.execute(f"DELETE FROM {table} WHERE book_id=?", (identifier,))
             conn.execute("DELETE FROM books WHERE id=?", (identifier,))
         # Remove the copy only after commit, so a database failure cannot lose the PDF.
+        from .extraction_tasks import Tasks
+
+        Tasks(self.store.root).delete_book(identifier)
         try:
             document.unlink(missing_ok=True)
         except OSError as exc:

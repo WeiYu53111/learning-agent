@@ -203,14 +203,105 @@ class SemanticExtractor:
         )
 
     def section(self, section):
-        from .book_learning import groups
+        """An unfinished original block is regenerated as a new isolated attempt."""
+        from .book_models import NavigationItem
+        from .extraction_tasks import ExtractionStopped, Tasks
+        from .storage import uid
 
         prefix = f"{section.id}:{PIPELINE}"
         saved = self.library.step(self.owner, prefix + ":complete")
         if saved is not None:
-            self.emit(f"{section.title}：复用已审核章节")
             return saved
         chunks = self.library.app.section_chunks(self.book, section.id)
+        points, items, regions, batch_of = [], [], [], {}
+        task = getattr(self.library, "_extraction_task", None)
+        for number, chunk in enumerate(chunks):
+            key = prefix + f":block:{number}:complete"
+            result = self.library.step(self.owner, key)
+            if result is None:
+                if task:
+                    Tasks(self.library.store.root).update(
+                        task,
+                        status="running",
+                        chapter=section.id,
+                        block=number + 1,
+                        total=len(chunks),
+                        chunk_id=chunk.id,
+                        phase="extract",
+                        preview=None,
+                    )
+                self.library.check_extraction()
+                attempt = prefix + f":block:{number}:attempt:{uid('run')}"
+                context = chunks[max(0, number - 1) : number] + chunks[number + 1 : number + 2]
+                result = self._section(section, [chunk], attempt, context)
+                self.library.check_extraction()
+                if task:
+                    with Tasks(self.library.store.root).connect() as conn:
+                        state = json.loads(
+                            conn.execute("SELECT data FROM tasks WHERE id=?", (task,)).fetchone()[0]
+                        )
+                        if state["status"] == "stopping":
+                            raise ExtractionStopped("已停止")
+                        self.library.save_step(self.owner, key, result)
+                        state.update(phase="between_blocks", block=number + 2, preview=None)
+                        conn.execute(
+                            "UPDATE tasks SET data=? WHERE id=?", (json.dumps(state), task)
+                        )
+                else:
+                    self.library.save_step(self.owner, key, result)
+            mapping = {p["key"]: f"block{number}_{p['key']}" for p in result["points"]}
+            points.extend(
+                KnowledgePoint.model_validate(
+                    {**{k: v for k, v in p.items() if k != "section_id"}, "key": mapping[p["key"]]}
+                )
+                for p in result["points"]
+            )
+            items.extend(
+                NavigationItem.model_validate(
+                    {
+                        **it,
+                        "key": f"block{number}_{it['key']}",
+                        "point_keys": [mapping[k] for k in it["point_keys"]],
+                    }
+                )
+                for it in result["items"]
+            )
+            batch_of.update({k: number for k in mapping.values()})
+            regions.extend(result["regions"])
+        if task:
+            Tasks(self.library.store.root).update(
+                task, status="running", phase="chapter_review", block=None, preview=None
+            )
+        self.library.check_extraction()
+        final_prefix = prefix + ":blocks:" + digest([p.model_dump() for p in points])
+        nav = self.boundaries(
+            final_prefix,
+            section,
+            Navigation(points=points, items=items),
+            batch_of,
+            chunks,
+            [r for r in regions if not r["excluded"]],
+        )
+        result = dict(
+            points=[{**p.model_dump(), "section_id": section.id} for p in nav.points],
+            items=[i.model_dump() for i in nav.items],
+            regions=regions,
+        )
+        self.library.check_extraction()
+        self.library.save_step(self.owner, prefix + ":complete", result)
+        return result
+
+    def _section(self, section, chunks=None, prefix=None, context_chunks=()):
+        from .book_learning import groups
+
+        prefix = prefix or f"{section.id}:{PIPELINE}"
+        saved = self.library.step(self.owner, prefix + ":complete")
+        if saved is not None:
+            self.emit(f"{section.title}：复用已审核章节")
+            return saved
+        chunks = (
+            chunks if chunks is not None else self.library.app.section_chunks(self.book, section.id)
+        )
         chunk_map = {c.id: c for c in chunks}
         units = source_units(chunks)
         bookmarks = [
@@ -276,6 +367,7 @@ class SemanticExtractor:
             context = [
                 {"text": region_text(r, chunk_map)[:1600], "path": r["path"]} for r in neighbors
             ]
+            context.extend({"text": c.text[:1600], "path": []} for c in context_chunks)
             payload = {
                 "section": section.title,
                 "path": batch[0]["path"],
@@ -393,6 +485,18 @@ class SemanticExtractor:
             for i, j in candidate_pairs(briefs, tokens)
             if batch_of[briefs[i]["key"]] != batch_of[briefs[j]["key"]]
         ]
+        # Always inspect adjacent boundaries, even when titles share no search tokens.
+        by_batch = defaultdict(list)
+        for i, brief in enumerate(briefs):
+            by_batch[batch_of[brief["key"]]].append(i)
+        ordered = sorted(by_batch)
+        extra = [
+            (i, j)
+            for left, right in zip(ordered, ordered[1:], strict=False)
+            for i in by_batch[left][-2:]
+            for j in by_batch[right][:2]
+        ]
+        pairs = sorted(set(pairs + extra))
         original = {p.key: p for p in nav.points}
         parent = {k: k for k in original}
 

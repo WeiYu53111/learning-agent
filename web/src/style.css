@@ -642,3 +642,23 @@ mark {
     font-size: 25px;
   }
 }
+.extraction-panel {
+  margin: 1rem 2rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid #d8ded8;
+  border-radius: 12px;
+  background: #fafcf9;
+}
+.extraction-panel .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.extraction-panel article {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #d8ded8;
+}
+.extraction-panel blockquote {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

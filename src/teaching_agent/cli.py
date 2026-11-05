@@ -131,7 +131,7 @@ def parser():
         parser_class=argparse.ArgumentParser,
     )
     sub.add_parser("demo", help="创建明确标注的离线演示教材与草稿")
-    command = sub.add_parser("web", help="启动本地只读 Web，Ctrl+C 退出")
+    command = sub.add_parser("web", help="启动本地教材检查与抽取工作台，Ctrl+C 退出")
     command.add_argument("--port", type=int, default=8765)
     command = sub.add_parser("import", help="只解析并保存 PDF，不调用模型")
     command.add_argument("path", type=Path)
@@ -861,7 +861,8 @@ def dispatch(app, args):
                 args.book, progress, new=args.new, section_id=args.section,
                 content_only=args.content_only,
             )
-        print(f"知识结构：{result['id']}；查看：teach outline {args.book}")
+        if result is not None:
+            print(f"知识结构：{result['id']}；查看：teach outline {args.book}")
     elif command == "relations":
         with DraftProgress() as progress:
             coverage = app.library.relations(
@@ -1144,7 +1145,7 @@ def main(argv=None):
         try:
             from .web import serve
 
-            serve(store, args.port)
+            serve(store, args.port, config=args.config, backend=args.backend)
             return 0
         except ImportError:
             print('请先安装 Web 依赖：python -m pip install -e ".[web]"', file=sys.stderr)

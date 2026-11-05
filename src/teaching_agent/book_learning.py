@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from collections import Counter
@@ -125,6 +126,7 @@ class BookLearning:
             self.store.event(conn, owner, kind, data)
 
     def call(self, book, owner, key, operation, payload, contract, validate, emit):
+        self.check_extraction()
         cached = self.step(owner, key)
         if cached is not None:
             emit(f"{key}：复用已保存结果")
@@ -139,6 +141,7 @@ class BookLearning:
         if previous:
             request.update(previous=previous["candidate"], errors=previous["errors"])
         for attempt in range(2):
+            self.check_extraction()
             emit(
                 f"{key}：等待模型{'纠正' if previous or attempt else '处理'}；"
                 f"后端/模型：{gateway.model}"
@@ -157,6 +160,7 @@ class BookLearning:
                     "errors": errors if candidate else request.get("errors", []) + errors,
                 }
                 self.save_step(owner, key + ":rejected", rejected)
+                self.check_extraction()
                 self.event(
                     owner,
                     "book_operation_failed",
@@ -178,6 +182,14 @@ class BookLearning:
                 continue
             elapsed = time.monotonic() - started
             self.save_step(owner, key, candidate.model_dump())
+            if getattr(self, "_extraction_task", None):
+                from .extraction_tasks import Tasks
+
+                changes = {"phase": operation}
+                if "points" in candidate.model_dump():
+                    changes["preview"] = candidate.model_dump()
+                Tasks(self.store.root).update(self._extraction_task, **changes)
+            self.check_extraction()
             self.event(
                 owner,
                 "book_operation_completed",
@@ -204,7 +216,43 @@ class BookLearning:
                     (book.id, chunk.id, dumps(dict(Counter(tokens(chunk.text))))),
                 )
 
+    def check_extraction(self):
+        if getattr(self, "_extraction_task", None):
+            from .extraction_tasks import Tasks
+
+            Tasks(self.store.root).check(self._extraction_task)
+
     def index(self, book_id, emit=lambda _: None, new=False, section_id=None, content_only=False):
+        from .extraction_tasks import ExtractionStopped, Tasks
+
+        tasks = Tasks(self.store.root)
+        task = getattr(self, "_requested_task", None) or tasks.create(book_id, section_id, new)
+        self._requested_task = None
+        self._extraction_task = task
+        try:
+            tasks.update(
+                task,
+                status="running",
+                pid=os.getpid(),
+                config=str(self.app.backends.path.resolve()) if self.app.backends.path else None,
+                backend=self.app.backends.selected,
+            )
+            result = self._index(book_id, emit, new, section_id, content_only)
+            self.check_extraction()
+            tasks.update(task, status="completed", preview=None, index=result["id"])
+            return result
+        except ExtractionStopped:
+            tasks.update(task, status="stopped")
+            emit("已停止；继续时从当前文本块开头重新抽取。")
+            return None
+        except BaseException as exc:
+            tasks.update(task, status="failed", error=str(exc))
+            raise
+        finally:
+            self._extraction_task = None
+            self._resume_index = None
+
+    def _index(self, book_id, emit=lambda _: None, new=False, section_id=None, content_only=False):
         book = self.app.book(book_id)
         # Old imports lack nested bookmark metadata; reading the outline does not
         # reparse or rewrite their original text chunks and citation coordinates.
@@ -248,6 +296,11 @@ class BookLearning:
             if json.loads(r["data"]).get("through_section") == section_id
             and "through_section" in json.loads(r["data"])
         ]
+        resume_index = getattr(self, "_resume_index", None)
+        if resume_index:
+            pending = [r for r in pending if r["id"] == resume_index]
+            if not pending:
+                raise AppError("原任务索引已不可恢复，请重新启动抽取。")
         if pending and not new:
             owner = pending[0]["id"]
         elif active and not new and set(wanted) <= set(completed):
@@ -297,6 +350,10 @@ class BookLearning:
                             "WHERE owner_id=? AND step LIKE ?",
                             (owner, donor["id"], chapter + ":%"),
                         )
+        if getattr(self, "_extraction_task", None):
+            from .extraction_tasks import Tasks
+
+            Tasks(self.store.root).update(self._extraction_task, index=owner)
         state_rows = self.store.rows(
             "SELECT status FROM index_content_state WHERE index_id=?", (owner,)
         )
@@ -405,6 +462,7 @@ class BookLearning:
         digest = hashlib.sha256(
             dumps({k: v for k, v in data.items() if k != "relations"}).encode()
         ).hexdigest()
+        self.check_extraction()
         with self.store.connect() as conn:
             conn.execute("UPDATE book_indexes SET data=? WHERE id=?", (dumps(data), owner))
             conn.execute(

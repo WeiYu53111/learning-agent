@@ -218,7 +218,9 @@ def test_failed_semantic_verification_cannot_publish_or_loop(app):
     assert len(reviews) == 2
     with pytest.raises(AppError, match="审核仍未通过"):
         app.library.index(book.id)
-    assert len(reviews) == 2
+    # Explicit continuation regenerates the unfinished original block, with a bounded
+    # review budget for the new attempt (and potentially updated prompts).
+    assert len(reviews) == 4
     assert app.library.active(book.id) is None
 
 

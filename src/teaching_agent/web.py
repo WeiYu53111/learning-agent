@@ -291,7 +291,7 @@ def read(store):
         yield Reader(conn)
 
 
-def create_app(store: Store, static_dir: Path = STATIC):
+def create_app(store: Store, static_dir: Path = STATIC, config=None, backend=None):
     app = FastAPI(title="教材检查工作台", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
@@ -299,6 +299,12 @@ def create_app(store: Store, static_dir: Path = STATIC):
 
     @app.middleware("http")
     async def headers(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            if (
+                origin and origin.rstrip("/") != str(request.base_url).rstrip("/")
+            ) or request.headers.get("sec-fetch-site") == "cross-site":
+                return JSONResponse(status_code=403, content={"detail": "不允许跨站写入请求。"})
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -312,6 +318,37 @@ def create_app(store: Store, static_dir: Path = STATIC):
     @app.exception_handler(AppError)
     async def app_error(request, exc):
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    @app.get("/api/books/{book_id}/extraction")
+    def extraction_tasks(book_id: str):
+        from .extraction_checkpoints import previews
+        from .extraction_tasks import Tasks
+
+        with read(store) as r:
+            r.book(book_id)
+        values = Tasks(store.root).list(book_id)
+        return [{**v, "blocks": previews(store, v)} for v in values[:10]]
+
+    @app.post("/api/books/{book_id}/extraction")
+    def start_extraction(
+        book_id: str, section: str | None = None, new: bool = False, resume: str | None = None
+    ):
+        from .extraction_tasks import launch
+
+        with read(store) as r:
+            book = r.book(book_id)
+            if section and section not in {s.id for s in book.sections}:
+                raise HTTPException(404, "章节不存在。")
+        return {"id": launch(store, book_id, section, new, resume, config, backend)}
+
+    @app.post("/api/books/{book_id}/extraction/{task_id}/stop")
+    def stop_extraction(book_id: str, task_id: str):
+        from .extraction_tasks import Tasks
+
+        tasks = Tasks(store.root)
+        if not any(t["id"] == task_id for t in tasks.list(book_id)):
+            raise HTTPException(404, "任务不存在。")
+        return tasks.stop(task_id)
 
     @app.get("/api/books", response_model=list[BookInfo])
     def books():
@@ -477,12 +514,12 @@ def create_app(store: Store, static_dir: Path = STATIC):
     return app
 
 
-def serve(store: Store, port: int):
+def serve(store: Store, port: int, config=None, backend=None):
     import uvicorn
 
     if not 1 <= port <= 65535:
         raise AppError("端口必须在 1–65535 之间。")
-    print(f"只读检查工作台：http://127.0.0.1:{port}（Ctrl+C 退出）", flush=True)
+    print(f"教材检查工作台：http://127.0.0.1:{port}（Ctrl+C 退出）", flush=True)
     if not (STATIC / "index.html").is_file():
         print("前端尚未构建：在 web 目录执行 npm ci 和 npm run build；API 仍可用于开发。")
-    uvicorn.run(create_app(store), host="127.0.0.1", port=port)
+    uvicorn.run(create_app(store, config=config, backend=backend), host="127.0.0.1", port=port)
