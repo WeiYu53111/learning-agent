@@ -86,7 +86,27 @@ class Tasks:
                 raise AppError("抽取任务不存在。")
             value = json.loads(row[0])
             if value["status"] == "stopping" and changes.get("status") == "running":
-                raise ExtractionStopped("已停止，将从当前文本块重新抽取。")
+                raise ExtractionStopped("已停止，将从当前模型批次的首块重新抽取。")
+            part = changes.pop("preview_part", None)
+            if part is not None:
+                parts = value.get("preview_parts", {})
+                parts[part] = changes["preview"]
+                points, items = [], []
+                for number in sorted(parts, key=int):
+                    nav = parts[number]
+                    mapping = {p["key"]: f"batch{number}_{p['key']}" for p in nav["points"]}
+                    points.extend({**p, "key": mapping[p["key"]]} for p in nav["points"])
+                    items.extend(
+                        {
+                            **i,
+                            "key": f"batch{number}_{i['key']}",
+                            "point_keys": [mapping[k] for k in i["point_keys"]],
+                        }
+                        for i in nav.get("items", [])
+                    )
+                changes.update(preview_parts=parts, preview=dict(points=points, items=items))
+            elif "preview" in changes:
+                changes["preview_parts"] = {}
             value.update(changes, updated_at=now())
             conn.execute(
                 "UPDATE tasks SET data=? WHERE id=?", (json.dumps(value, ensure_ascii=False), task)

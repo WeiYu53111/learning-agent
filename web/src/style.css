@@ -662,3 +662,86 @@ mark {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.extraction-page {
+  padding: 24px;
+  max-width: 1800px;
+  margin: auto;
+}
+.extraction-page .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.extraction-columns {
+  display: grid;
+  grid-template-columns: 220px minmax(240px, 1fr) minmax(300px, 1.4fr);
+  gap: 18px;
+  margin-top: 24px;
+}
+.extraction-columns > * {
+  min-width: 0;
+  border: 1px solid #d8ded8;
+  border-radius: 12px;
+  padding: 16px;
+  max-height: 72vh;
+  overflow: auto;
+  background: #fff;
+}
+.extraction-columns nav button,
+.extraction-point {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 8px 0;
+  padding: 12px;
+}
+.extraction-point span {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.extraction-columns [aria-pressed="true"],
+.extraction-columns [aria-current="true"] {
+  border-color: #377463;
+  background: #ecf5ee;
+}
+.extraction-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  line-height: 1.8;
+}
+.extraction-detail blockquote {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.detail-close {
+  display: none;
+}
+@media (max-width: 850px) {
+  .extraction-page {
+    padding: 12px;
+  }
+  .extraction-columns {
+    grid-template-columns: minmax(110px, 1fr) minmax(170px, 2fr);
+    gap: 8px;
+  }
+  .extraction-detail {
+    display: none;
+  }
+  .extraction-detail.open {
+    display: block;
+    position: fixed;
+    inset: 12px;
+    z-index: 100;
+    max-height: none;
+    box-shadow: 0 0 0 20px #0005;
+  }
+  .detail-close {
+    display: block;
+    position: sticky;
+    top: 0;
+  }
+}

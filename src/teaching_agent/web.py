@@ -321,13 +321,29 @@ def create_app(store: Store, static_dir: Path = STATIC, config=None, backend=Non
 
     @app.get("/api/books/{book_id}/extraction")
     def extraction_tasks(book_id: str):
-        from .extraction_checkpoints import previews
         from .extraction_tasks import Tasks
 
         with read(store) as r:
             r.book(book_id)
         values = Tasks(store.root).list(book_id)
-        return [{**v, "blocks": previews(store, v)} for v in values[:10]]
+        return [
+            {k: value for k, value in v.items() if k not in {"preview", "preview_parts"}}
+            for v in values
+        ]
+
+    @app.get("/api/books/{book_id}/extraction/{task_id}")
+    def extraction_detail(
+        book_id: str, task_id: str, chapter: str | None = None, block: int | None = None
+    ):
+        from .extraction_checkpoints import detail
+        from .extraction_tasks import Tasks
+
+        with read(store) as r:
+            book = r.book(book_id)
+        task = next((v for v in Tasks(store.root).list(book_id) if v["id"] == task_id), None)
+        if task is None:
+            raise HTTPException(404, "任务不存在。")
+        return detail(store, task, book, chapter, block)
 
     @app.post("/api/books/{book_id}/extraction")
     def start_extraction(

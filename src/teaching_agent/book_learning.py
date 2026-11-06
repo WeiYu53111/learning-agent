@@ -188,6 +188,9 @@ class BookLearning:
                 changes = {"phase": operation}
                 if "points" in candidate.model_dump():
                     changes["preview"] = candidate.model_dump()
+                    part = re.search(r":(?:extract|quality):(\d+)(?::|$)", key)
+                    if part:
+                        changes["preview_part"] = part[1]
                 Tasks(self.store.root).update(self._extraction_task, **changes)
             self.check_extraction()
             self.event(
@@ -243,7 +246,7 @@ class BookLearning:
             return result
         except ExtractionStopped:
             tasks.update(task, status="stopped")
-            emit("已停止；继续时从当前文本块开头重新抽取。")
+            emit("已停止；继续时从当前模型批次的首块重新抽取。")
             return None
         except BaseException as exc:
             tasks.update(task, status="failed", error=str(exc))

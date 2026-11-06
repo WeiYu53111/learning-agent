@@ -3,6 +3,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import Relations from "./Relations";
 import ExtractionPanel from "./ExtractionPanel";
+import ExtractionPage from "./ExtractionPage";
+import { Highlight } from "./SourceText";
+export { Highlight } from "./SourceText";
 import type {
   Book,
   Catalog,
@@ -40,25 +43,6 @@ const statuses: Record<string, string> = {
   partial: "部分完成",
   not_started: "尚未分析",
 };
-
-export function Highlight({ text, quote }: { text: string; quote?: string }) {
-  if (!quote) return <>{text}</>;
-  const start = text.indexOf(quote);
-  if (start < 0 || text.indexOf(quote, start + 1) >= 0)
-    return (
-      <>
-        <span className="notice">引用无法唯一匹配此文本块。</span>
-        {text}
-      </>
-    );
-  return (
-    <>
-      {text.slice(0, start)}
-      <mark>{quote}</mark>
-      {text.slice(start + quote.length)}
-    </>
-  );
-}
 
 function Source({
   book,
@@ -175,6 +159,15 @@ function Source({
 }
 
 export default function App() {
+  const [params] = useSearchParams();
+  return params.get("view") === "extraction" ? (
+    <ExtractionPage />
+  ) : (
+    <Workspace />
+  );
+}
+
+function Workspace() {
   const [params, setParams] = useSearchParams();
   const client = useQueryClient();
   const [reference, setReference] = useState<Ref | null>(null);

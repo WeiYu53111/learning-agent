@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import defaultdict
 
 from .book_models import KnowledgePoint, Navigation
@@ -187,6 +188,8 @@ def teaching_errors(structure, chunks, regions):
 
 
 class SemanticExtractor:
+    max_batch_blocks = 3
+
     def __init__(self, library, book, owner, emit):
         self.library, self.book, self.owner, self.emit = library, book, owner, emit
         gateway = library.app.gateway(book, owner)
@@ -206,7 +209,7 @@ class SemanticExtractor:
         """An unfinished original block is regenerated as a new isolated attempt."""
         from .book_models import NavigationItem
         from .extraction_tasks import ExtractionStopped, Tasks
-        from .storage import uid
+        from .storage import now, uid
 
         prefix = f"{section.id}:{PIPELINE}"
         saved = self.library.step(self.owner, prefix + ":complete")
@@ -215,7 +218,32 @@ class SemanticExtractor:
         chunks = self.library.app.section_chunks(self.book, section.id)
         points, items, regions, batch_of = [], [], [], {}
         task = getattr(self.library, "_extraction_task", None)
-        for number, chunk in enumerate(chunks):
+        plan_key = prefix + ":model-batches:v1"
+        plan = self.library.step(self.owner, plan_key)
+        if plan is None:
+            plan = {"batches": []}
+            number = 0
+            while number < len(chunks):
+                end = number + 1
+                size = len(chunks[number].text)
+                # Preserve old completed blocks; never batch them with unfinished input.
+                if self.library.step(self.owner, prefix + f":block:{number}:complete") is None:
+                    while end < len(chunks) and end - number < self.max_batch_blocks:
+                        if (
+                            self.library.step(self.owner, prefix + f":block:{end}:complete")
+                            is not None
+                        ):
+                            break
+                        if size + len(chunks[end].text) > min(8000, self.budget):
+                            break
+                        size += len(chunks[end].text)
+                        end += 1
+                plan["batches"].append(dict(start=number, end=end))
+                number = end
+            self.library.save_step(self.owner, plan_key, plan)
+        for batch in plan["batches"]:
+            number, end = batch["start"], batch["end"]
+            chunk = chunks[number]
             key = prefix + f":block:{number}:complete"
             result = self.library.step(self.owner, key)
             if result is None:
@@ -225,15 +253,32 @@ class SemanticExtractor:
                         status="running",
                         chapter=section.id,
                         block=number + 1,
+                        block_end=end,
+                        batch_chunk_ids=[c.id for c in chunks[number:end]],
                         total=len(chunks),
                         chunk_id=chunk.id,
                         phase="extract",
                         preview=None,
                     )
                 self.library.check_extraction()
+                timing_key = prefix + f":block:{number}:timing"
+                started = time.monotonic()
+                timing = dict(
+                    started_at=now(),
+                    finished_at=None,
+                    elapsed_seconds=None,
+                    block_start=number + 1,
+                    block_end=end,
+                )
+                self.library.save_step(self.owner, timing_key, timing)
                 attempt = prefix + f":block:{number}:attempt:{uid('run')}"
-                context = chunks[max(0, number - 1) : number] + chunks[number + 1 : number + 2]
-                result = self._section(section, [chunk], attempt, context)
+                context = chunks[max(0, number - 1) : number] + chunks[end : end + 1]
+                try:
+                    result = self._section(section, chunks[number:end], attempt, context)
+                    result.update(block_end=end, batch_chunk_ids=[c.id for c in chunks[number:end]])
+                finally:
+                    timing.update(finished_at=now(), elapsed_seconds=time.monotonic() - started)
+                    self.library.save_step(self.owner, timing_key, timing)
                 self.library.check_extraction()
                 if task:
                     with Tasks(self.library.store.root).connect() as conn:
@@ -243,7 +288,9 @@ class SemanticExtractor:
                         if state["status"] == "stopping":
                             raise ExtractionStopped("已停止")
                         self.library.save_step(self.owner, key, result)
-                        state.update(phase="between_blocks", block=number + 2, preview=None)
+                        state.update(
+                            phase="between_blocks", block=end + 1, block_end=end + 1, preview=None
+                        )
                         conn.execute(
                             "UPDATE tasks SET data=? WHERE id=?", (json.dumps(state), task)
                         )
@@ -270,7 +317,12 @@ class SemanticExtractor:
             regions.extend(result["regions"])
         if task:
             Tasks(self.library.store.root).update(
-                task, status="running", phase="chapter_review", block=None, preview=None
+                task,
+                status="running",
+                phase="chapter_review",
+                block=None,
+                block_end=None,
+                preview=None,
             )
         self.library.check_extraction()
         final_prefix = prefix + ":blocks:" + digest([p.model_dump() for p in points])

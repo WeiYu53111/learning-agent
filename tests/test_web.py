@@ -223,3 +223,16 @@ def test_extraction_control_origin_and_stop_under_writer_lock(app, client, book_
     assert client.post(path + "?section=s1&new=true").json() == {"id": "new_task"}
     assert calls[0][1:4] == (book_id, "s1", True)
     assert client.post(path + "?section=missing").status_code == 404
+
+
+def test_task_detail_is_addressable_and_book_isolated(app, client, book_id):
+    from teaching_agent.extraction_tasks import Tasks
+
+    task = Tasks(app.store.root).create(book_id)
+    path = f"/api/books/{book_id}/extraction"
+    data = client.get(f"{path}/{task}").json()
+    assert data["selected"]["chunks"]
+    assert data["sections"]
+    assert "blocks" not in client.get(path).json()[0]
+    assert client.get(f"{path}/missing").status_code == 404
+    assert client.get(f"{path}/{task}?chapter=missing&block=1").status_code == 400

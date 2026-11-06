@@ -452,7 +452,9 @@ def test_later_draft_edits_cannot_reintroduce_excluded_text(app):
 
 
 @pytest.mark.parametrize("reject_repair", [False, True])
-def test_boundary_failure_repairs_locally_and_resumes(app, reject_repair):
+def test_boundary_failure_repairs_locally_and_resumes(app, reject_repair, monkeypatch):
+    # Keep two independent model batches to exercise chapter-level boundary recovery.
+    monkeypatch.setattr("teaching_agent.extraction.SemanticExtractor.max_batch_blocks", 1)
     book = save_book(app, ["栈的定义", "栈的性质"])
     calls, _ = classified_gateway(app, {})
     wrapped = app.injected_gateway.book_operation

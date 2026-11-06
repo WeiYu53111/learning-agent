@@ -37,9 +37,9 @@ def parse_pdf(path: Path) -> Book:
             # Retain every character; split by paragraph boundaries when possible.
             offset = 0
             while offset < len(text):
-                end = min(offset + 1600, len(text))
+                end = min(offset + 3200, len(text))
                 if end < len(text):
-                    boundary = text.rfind("\n", offset + 800, end)
+                    boundary = text.rfind("\n", offset + 1600, end)
                     if boundary > offset:
                         end = boundary + 1
                 part = text[offset:end]
