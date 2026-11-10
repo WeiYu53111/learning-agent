@@ -107,6 +107,10 @@ class Application:
         section = next((s for s in book.sections if s.id == section_id), None)
         if not section:
             raise AppError("章节不存在。")
+        if book.source_type != "pdf":
+            if page_range:
+                raise AppError("非 PDF 教材不支持页码范围。")
+            return [c for c in book.chunks if c.id in section.chunk_ids]
         start, end = section.start_page, section.end_page
         if page_range:
             try:
@@ -118,17 +122,23 @@ class Application:
         return [c for c in book.chunks if c.id in section.chunk_ids and start <= c.page <= end]
 
     def import_pdf(self, path: Path, demo=False):
-        book = parse_pdf(path)
+        return self.import_source(path, demo=demo)
+
+    def import_source(self, path: Path, demo=False):
+        from .ingestion import parse_source
+
+        book = parse_source(path)
         existing = self.store.rows("SELECT id FROM books WHERE sha256=?", (book.sha256,))
         if existing:
             return self.book(existing[0]["id"])
         book.demo = demo
-        destination = self.store.root / "documents" / f"{book.sha256}.pdf"
+        destination = self.store.root / "documents" / f"{book.sha256}{path.suffix.lower()}"
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not destination.exists():
             temp = destination.with_suffix(".part")
             temp.write_bytes(path.read_bytes())
             temp.replace(destination)
+        book.asset_path = str(destination.relative_to(self.store.root))
         with self.store.connect() as conn:
             conn.execute(
                 "INSERT INTO books VALUES(?,?,?)", (book.id, book.sha256, book.model_dump_json())
@@ -169,7 +179,8 @@ class Application:
             digest = row["sha256"]
             if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
                 raise AppError("教材文件摘要无效，无法安全定位 PDF。")
-            document = self.store.root / "documents" / f"{digest}.pdf"
+            saved_book = self.book(identifier)
+            document = self.store.root / (saved_book.asset_path or f"documents/{digest}.pdf")
             if not document.resolve().is_relative_to(self.store.root.resolve()):
                 raise AppError("教材 PDF 路径超出数据目录，停止删除。")
             for version in versions:

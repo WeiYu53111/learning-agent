@@ -259,7 +259,7 @@ class BookLearning:
         book = self.app.book(book_id)
         # Old imports lack nested bookmark metadata; reading the outline does not
         # reparse or rewrite their original text chunks and citation coordinates.
-        if not book.bookmarks:
+        if book.source_type == "pdf" and not book.bookmarks:
             path = self.store.root / "documents" / f"{book.sha256}.pdf"
             if path.is_file():
                 import pymupdf

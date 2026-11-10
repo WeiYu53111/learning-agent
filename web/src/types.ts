@@ -1,6 +1,7 @@
 export type Ref = { chunk_id: string; quote: string };
 export type Chunk = { id: string; page: number; text: string };
 export type Book = {
+  source_type?: string;
   id: string;
   filename: string;
   page_count: number;

@@ -128,7 +128,7 @@ it("浏览已保存章节、筛选内容、点击引用并保留物理页码", a
         new QueryClient({ defaultOptions: { queries: { retry: false } } })
       }
     >
-      <MemoryRouter>
+      <MemoryRouter initialEntries={["/?book=b"]}>
         <App />
       </MemoryRouter>
     </QueryClientProvider>,

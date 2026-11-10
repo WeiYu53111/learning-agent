@@ -28,7 +28,7 @@ COMMAND_GROUPS = (
     (
         "教材与学习",
         (
-            ("import", '"教材.pdf"', "导入文本 PDF"),
+            ("import", '"教材.pdf"', "导入 PDF、TXT 或 Markdown"),
             ("books", "", "查看教材与 BOOK 编号"),
             ("web", "[--port 8765]", "打开本地内容与关联知识查看服务"),
             ("index", "BOOK", "梳理全书知识结构，可恢复"),
@@ -849,9 +849,9 @@ def dispatch(app, args):
         print(f"\n下一步：teach review {identifier}\n离线演示无需模型密钥。")
     elif command == "import":
         book = app.import_pdf(args.path)
-        print(f"教材：{book.id}；{book.page_count} 页")
+        print(f"教材：{book.id}；" + (f"{book.page_count} 页" if book.page_count is not None else f"{len(book.sections)} 个文本章节"))
         for section in book.sections:
-            print(f"  {section.id} p.{section.start_page}–{section.end_page} {section.title}")
+            print(f"  {section.id} {section.title}")
         if book.unavailable_pages:
             print(f"无文本页：{book.unavailable_pages}，不在可教学范围内。")
         print(f"下一步：teach index {book.id}；或直接 teach ask {book.id} --text '问题'")

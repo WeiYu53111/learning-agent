@@ -27,6 +27,30 @@ def test_missing_store_does_not_create_data(tmp_path):
     assert client.get("/", headers={"host": "attacker.example"}).status_code == 400
 
 
+def test_web_import_and_deduplication(tmp_path):
+    from teaching_agent.demo import make_pdf
+
+    path = tmp_path / "教材.pdf"
+    make_pdf(path)
+    client = TestClient(create_app(Store(tmp_path / "new-data")))
+    response = client.post("/api/import", params={"filename": path.name}, content=path.read_bytes())
+    assert response.status_code == 200
+    book = response.json()
+    assert book["filename"] == path.name
+    assert client.get(f"/api/books/{book['id']}").status_code == 200
+    again = client.post("/api/import", params={"filename": path.name}, content=path.read_bytes())
+    assert again.json()["id"] == book["id"]
+    assert len(client.get("/api/books").json()) == 1
+
+
+def test_web_import_rejects_invalid_and_cross_site(tmp_path):
+    client = TestClient(create_app(Store(tmp_path / "data")))
+    for filename, content in [("a.exe", b"text"), ("a.pdf", b""), ("a.pdf", b"invalid")]:
+        response = client.post("/api/import", params={"filename": filename}, content=content)
+        assert response.status_code == 400
+    assert client.post("/api/import?filename=a.pdf", content=b"test", headers={"origin": "https://example.com"}).status_code == 403
+
+
 def test_original_content_and_readonly_during_writer(app, client, book_id, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("Web must never initialize a store or invoke a model")

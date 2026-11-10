@@ -1,4 +1,4 @@
-"""Local read-only HTTP projections. Never initializes a store or instantiates a gateway."""
+"""Local HTTP projections with explicit import and extraction actions."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -14,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from .book_learning import knowledge_key
 from .book_models import KnowledgePoint, Navigation, NavigationItem, Relation
@@ -27,7 +29,8 @@ STATIC = Path(__file__).with_name("web_static")
 class BookInfo(BaseModel):
     id: str
     filename: str
-    page_count: int
+    page_count: int | None
+    source_type: str = "pdf"
     section_count: int
     unavailable_pages: list[int]
 
@@ -376,6 +379,33 @@ def create_app(store: Store, static_dir: Path = STATIC, config=None, backend=Non
                 for row in r.rows("SELECT data FROM books ORDER BY id")
             ]
 
+    @app.post("/api/import", response_model=BookInfo)
+    async def import_book(request: Request, filename: str = Query(min_length=1)):
+        from .application import Application
+        from .storage import writer_lock
+
+        filename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+        if Path(filename).suffix.lower() not in {".pdf", ".txt", ".md"}:
+            raise HTTPException(400, "请选择 PDF、TXT 或 Markdown 文件。")
+        with TemporaryDirectory(prefix="teach-import-") as directory:
+            path = Path(directory) / filename
+            size = 0
+            with path.open("wb") as output:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > 20 * 1024 * 1024:
+                        raise HTTPException(413, "文件不能超过 20 MiB。")
+                    output.write(chunk)
+            if not size:
+                raise HTTPException(400, "文件为空。")
+
+            def ingest():
+                with writer_lock(store.root):
+                    store.initialize()
+                    return info(Application(store).import_pdf(path))
+
+            return await run_in_threadpool(ingest)
+
     @app.get("/api/books/{book_id}", response_model=Catalog)
     def catalog(book_id: str):
         with read(store) as r:
@@ -514,6 +544,15 @@ def create_app(store: Store, static_dir: Path = STATIC, config=None, backend=Non
             return result
 
     # Unknown API paths must not return the SPA HTML.
+    @app.get("/api/books/{book_id}/source")
+    def text_source(book_id: str, section: str):
+        with read(store) as r:
+            book = r.book(book_id)
+            selected = next((s for s in book.sections if s.id == section), None)
+            if selected is None:
+                raise HTTPException(404, "章节不存在。")
+            return [c for c in book.chunks if c.id in selected.chunk_ids]
+
     @app.get("/api/{path:path}", include_in_schema=False)
     def missing_api(path: str):
         raise HTTPException(404, "接口不存在。")

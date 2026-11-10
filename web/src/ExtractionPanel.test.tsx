@@ -18,6 +18,8 @@ afterEach(() => {
 it("停止立即反馈，并从当前块继续而不是重抽全章", async () => {
   let status = "running";
   const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (!url.includes("/extraction"))
+      return { ok: true, json: async () => ({ sections: [] }) };
     if (init?.method === "POST") {
       if (url.endsWith("/stop")) status = "stopped";
       return { ok: true, json: async () => ({ id: "task" }) };

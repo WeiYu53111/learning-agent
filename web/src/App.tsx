@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import Relations from "./Relations";
-import ExtractionPanel from "./ExtractionPanel";
 import ExtractionPage from "./ExtractionPage";
+import Home from "./Home";
 import { Highlight } from "./SourceText";
 export { Highlight } from "./SourceText";
 import type {
@@ -30,6 +30,45 @@ async function get<T>(path: string): Promise<T> {
   return response.json();
 }
 const encode = encodeURIComponent;
+function TextSource({
+  book,
+  section,
+  reference,
+}: {
+  book: string;
+  section: string;
+  reference: Ref | null;
+}) {
+  const source = useQuery({
+    queryKey: ["text-source", book, section],
+    queryFn: () =>
+      get<(Chunk & { location: { start_line: number; end_line: number } })[]>(
+        `/books/${encode(book)}/source?section=${encode(section)}`,
+      ),
+  });
+  return (
+    <aside className="source-panel panel">
+      <h2>原文对照</h2>
+      {source.error && <p role="alert">{source.error.message}</p>}
+      {source.data?.map((c) => (
+        <article
+          className={`source-chunk ${reference?.chunk_id === c.id ? "focused" : ""}`}
+          key={c.id}
+        >
+          <small>
+            第 {c.location.start_line}–{c.location.end_line} 行
+          </small>
+          <p>
+            <Highlight
+              text={c.text}
+              quote={reference?.chunk_id === c.id ? reference.quote : undefined}
+            />
+          </p>
+        </article>
+      ))}
+    </aside>
+  );
+}
 const kinds: Record<string, string> = {
   definition: "定义",
   mechanism: "机制",
@@ -160,7 +199,12 @@ function Source({
 
 export default function App() {
   const [params] = useSearchParams();
-  return params.get("view") === "extraction" ? (
+  if (
+    ["home", "import", "library"].includes(params.get("view") || "home") &&
+    !(!params.has("view") && params.has("book"))
+  )
+    return <Home key={params.get("view")} />;
+  return params.get("view") === "extraction" && params.has("book") ? (
     <ExtractionPage />
   ) : (
     <Workspace />
@@ -292,12 +336,25 @@ function Workspace() {
           知页<span>LEARNING ATLAS</span>
         </a>
         <div className="topbar-title">
-          教材检查工作台<span className="badge">本地 · 只读</span>
+          教材检查工作台<span className="badge">本地</span>
         </div>
         <button onClick={refresh} disabled={refreshing}>
           {refreshing ? "正在刷新…" : "↻ 刷新数据"}
         </button>
       </header>
+      <div className="actions workspace-actions">
+        <button onClick={() => setParams({})}>← 返回首页</button>
+        <button
+          onClick={() => setParams({ view: "library", action: "browse" })}
+        >
+          选择教材
+        </button>
+        {!!book && (
+          <button onClick={() => setParams({ view: "extraction", book })}>
+            提取知识 →
+          </button>
+        )}
+      </div>
       {books.isPending && <div className="empty">正在读取教材…</div>}
       {error && (
         <div className="notice" role="alert">
@@ -310,11 +367,9 @@ function Workspace() {
           <span className="eyebrow">YOUR KNOWLEDGE, IN VIEW</span>
           <h1>从一本教材开始</h1>
           <p>导入教材后，在这里查看提取结果、知识之间的联系和原文依据。</p>
-          <code>teach import "教材.pdf"</code>
-          <p className="muted">导入完成后，点击右上角刷新。</p>
+          <p className="muted">返回首页，选择“导入教材”即可开始。</p>
         </div>
       )}
-      {!!book && <ExtractionPanel book={book} section={section} />}
       {!!books.data?.length && (
         <div className="workspace">
           <nav className="sidebar" aria-label="教材与章节">
@@ -376,7 +431,9 @@ function Workspace() {
                 <span>
                   {s.title}
                   <small>
-                    第 {s.start_page}–{s.end_page} 页
+                    {s.start_page != null
+                      ? `第 ${s.start_page}–${s.end_page} 页`
+                      : "文本章节"}
                   </small>
                 </span>
               </button>
@@ -397,8 +454,10 @@ function Workspace() {
             <h1>{chapter.data?.section.title ?? "选择章节"}</h1>
             <div className="chapter-meta">
               <span>
-                PDF 第 {chapter.data?.section.start_page ?? "—"}–
-                {chapter.data?.section.end_page ?? "—"} 页
+                {catalog.data?.book.source_type &&
+                catalog.data.book.source_type !== "pdf"
+                  ? "文本原文 · 按行定位"
+                  : `PDF 第 ${chapter.data?.section.start_page ?? "—"}–${chapter.data?.section.end_page ?? "—"} 页`}
               </span>
               <span className="badge">
                 {chapter.data?.source === "snapshot"
@@ -624,15 +683,20 @@ function Workspace() {
               · 所有操作仅查看
             </footer>
           </main>
-          {book && chapter.data && (
-            <Source
-              key={`${book}-${section}`}
-              book={book}
-              initialPage={chapter.data.section.start_page}
-              reference={reference}
-              clear={() => setReference(null)}
-            />
-          )}
+          {book &&
+            chapter.data &&
+            (catalog.data?.book.source_type &&
+            catalog.data.book.source_type !== "pdf" ? (
+              <TextSource book={book} section={section} reference={reference} />
+            ) : (
+              <Source
+                key={`${book}-${section}`}
+                book={book}
+                initialPage={chapter.data.section.start_page}
+                reference={reference}
+                clear={() => setReference(null)}
+              />
+            ))}
         </div>
       )}
     </div>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 class Contract(BaseModel):
@@ -18,16 +18,23 @@ class Ref(Contract):
 
 class Chunk(Contract):
     id: str
-    page: int
-    text: str
+    page: int | None = None
+    text: Annotated[str, StringConstraints(strip_whitespace=False)]
+    location: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def preserve_pdf_text_contract(self):
+        if self.page is not None:
+            self.text = self.text.strip()
+        return self
 
 
 class Section(Contract):
     id: str
     title: str
     level: int = 1
-    start_page: int
-    end_page: int
+    start_page: int | None = None
+    end_page: int | None = None
     chunk_ids: list[str]
 
 
@@ -35,7 +42,10 @@ class Book(Contract):
     id: str
     filename: str
     sha256: str
-    page_count: int
+    page_count: int | None = None
+    source_type: str = "pdf"
+    source_version: str = "legacy"
+    asset_path: str | None = None
     sections: list[Section]
     chunks: list[Chunk]
     unavailable_pages: list[int] = Field(default_factory=list)

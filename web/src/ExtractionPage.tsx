@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -8,7 +9,7 @@ import {
   useExtraction,
   type Task,
 } from "./useExtraction";
-import type { Point, Item, Chunk } from "./types";
+import type { Point, Item, Chunk, Catalog } from "./types";
 import { Highlight } from "./SourceText";
 import { BlockTiming, type Timing } from "./BlockTiming";
 type Content = {
@@ -59,6 +60,13 @@ const blockLabels: Record<string, string> = {
 export default function ExtractionPage() {
   const [params, setParams] = useSearchParams();
   const book = params.get("book") || "";
+  const [targetSection, setTargetSection] = useState("");
+  const catalog = useQuery({
+    queryKey: ["catalog", book],
+    queryFn: () =>
+      extractionRequest<Catalog>(`/api/books/${encodeURIComponent(book)}`),
+    enabled: !!book,
+  });
   const { query, path, pending, error, act, open } = useExtraction(book);
   const taskId = params.get("task") || query.data?.[0]?.id || "";
   const chapter = params.get("chapter"),
@@ -99,7 +107,53 @@ export default function ExtractionPage() {
     <main className="extraction-page">
       <header>
         <a href={`/?book=${encodeURIComponent(book)}`}>← 返回教材工作台</a>
+        <div className="actions">
+          <Link to="/">返回首页</Link>
+          <Link to="/?view=library&action=extraction">选择教材</Link>
+        </div>
         <h1>实时抽取内容</h1>
+        <div className="actions">
+          <label>
+            目标章节{" "}
+            <select
+              value={targetSection}
+              onChange={(e) => setTargetSection(e.target.value)}
+            >
+              <option value="">请选择章节</option>
+              {catalog.data?.sections.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            disabled={
+              !targetSection ||
+              pending ||
+              query.isPending ||
+              !!query.error ||
+              query.data?.some(activeTask)
+            }
+            onClick={() => act(`?section=${encodeURIComponent(targetSection)}`)}
+          >
+            抽取至所选章
+          </button>
+          <button
+            disabled={
+              !targetSection ||
+              pending ||
+              query.isPending ||
+              !!query.error ||
+              query.data?.some(activeTask)
+            }
+            onClick={() =>
+              act(`?new=true&section=${encodeURIComponent(targetSection)}`)
+            }
+          >
+            重抽所选章
+          </button>
+        </div>
         <label>
           抽取任务{" "}
           <select
@@ -124,6 +178,28 @@ export default function ExtractionPage() {
             : "正在加载任务…"}
         </p>
         <div className="actions">
+          <button
+            disabled={
+              pending ||
+              query.isPending ||
+              !!query.error ||
+              query.data?.some(activeTask)
+            }
+            onClick={() => act("")}
+          >
+            抽取全书
+          </button>
+          <button
+            disabled={
+              pending ||
+              query.isPending ||
+              !!query.error ||
+              query.data?.some(activeTask)
+            }
+            onClick={() => act("?new=true")}
+          >
+            重抽全书
+          </button>
           <button onClick={() => select()} disabled={!chapter}>
             跟随当前抽取
           </button>
@@ -187,7 +263,7 @@ export default function ExtractionPage() {
           <p>旧索引没有逐块记录，请选择“章节整合结果”查看已有内容。</p>
         )}
         {!taskId && !query.isLoading && (
-          <p>暂无任务，请返回工作台启动抽取或查看已有章节索引。</p>
+          <p>暂无任务，点击“抽取全书”开始，或返回教材工作台浏览已有内容。</p>
         )}
       </header>
       <div className="extraction-columns">
@@ -308,7 +384,7 @@ export default function ExtractionPage() {
           {content?.chunks.map((c) => (
             <article key={c.id}>
               <h3>
-                原文 · 第 {c.page} 页 · {c.id}
+                原文 · {c.page != null ? `第 ${c.page} 页` : "文本"} · {c.id}
               </h3>
               <pre>
                 <Highlight
