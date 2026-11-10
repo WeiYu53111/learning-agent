@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections import defaultdict
 
@@ -94,6 +95,58 @@ def materialize(analysis, units, section_id):
 
 def region_text(region, chunk_map):
     return chunk_map[region["chunk_id"]].text[region["start"] : region["end"]]
+
+
+def markdown_structure(regions, chunks):
+    """Separate explicit Markdown headings from teaching evidence, preserving offsets."""
+    text = "".join(c.text for c in chunks)
+    lines = text.splitlines(keepends=True)
+    headings, offset, fence = [], 0, None
+    for i, line in enumerate(lines):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            token = marker[1]
+            if fence is None:
+                fence = token
+            elif (
+                token[0] == fence[0]
+                and len(token) >= len(fence)
+                and not line[len(line) - len(line.lstrip()) + len(token) :].strip()
+            ):
+                fence = None
+        elif fence is None:
+            if re.match(r"^ {0,3}#{1,6}(?:\s|$)", line):
+                headings.append((offset, offset + len(line)))
+            elif (
+                line.strip()
+                and i + 1 < len(lines)
+                and re.fullmatch(r" {0,3}(?:=+|-+)\s*", lines[i + 1])
+            ):
+                headings.append((offset, offset + len(line) + len(lines[i + 1])))
+        offset += len(line)
+    offsets, offset = {}, 0
+    for chunk in chunks:
+        offsets[chunk.id] = offset
+        offset += len(chunk.text)
+    result = []
+    for region in regions:
+        base = offsets[region["chunk_id"]]
+        ranges = [
+            (max(region["start"], a - base), min(region["end"], b - base))
+            for a, b in headings
+            if a < base + region["end"] and b > base + region["start"]
+        ]
+        cuts = sorted({region["start"], region["end"], *(p for pair in ranges for p in pair)})
+        for start, end in zip(cuts, cuts[1:], strict=False):
+            part = {**region, "start": start, "end": end}
+            if any(a <= start and end <= b for a, b in ranges):
+                part.update(
+                    role="navigation",
+                    excluded=True,
+                    reason="Markdown 标题仅作为结构导航，不作为独立教学证据。",
+                )
+            result.append(part)
+    return result
 
 
 def navigation_errors(nav, chunks, regions):
@@ -388,6 +441,8 @@ class SemanticExtractor:
                 r["start"],
             )
         )
+        if self.book.source_type == "markdown":
+            regions = markdown_structure(regions, self.book.chunks)
         self.library.save_step(self.owner, prefix + ":regions", {"regions": regions})
         eligible = [r for r in regions if not r["excluded"] and region_text(r, chunk_map).strip()]
         plan = self.library.step(self.owner, prefix + ":plan")
