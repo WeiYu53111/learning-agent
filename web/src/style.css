@@ -14,6 +14,118 @@
   font-size: 14px;
   line-height: 1.65;
 }
+.personal-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 20px;
+  min-width: 0;
+}
+.personal-topbar {
+  flex-wrap: wrap;
+}
+.personal-topbar button {
+  white-space: nowrap;
+}
+@media (max-width: 700px) {
+  .personal-topbar h1 {
+    font-size: 22px;
+    flex-basis: 65%;
+  }
+  .personal-editor .markdown-preview {
+    min-height: 180px;
+  }
+}
+.personal-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr) 300px;
+  gap: 18px;
+  align-items: start;
+}
+.personal-list,
+.personal-editor,
+.personal-details {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.personal-layout input:not([type="checkbox"]),
+.personal-layout select,
+.inbox-item input,
+.inbox-item textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #d9e2dc;
+  border-radius: 6px;
+}
+.personal-editor label {
+  display: grid;
+  gap: 5px;
+}
+.card-body {
+  width: 100%;
+  min-height: 380px;
+  resize: vertical;
+  font: 14px/1.7 monospace;
+  padding: 14px;
+}
+.personal-source {
+  border-bottom: 1px solid #d9e2dc;
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+.personal-source small {
+  display: block;
+}
+.personal-source pre {
+  white-space: pre-wrap;
+}
+.personal-source blockquote {
+  margin: 8px 0;
+  border-left: 3px solid #6ca994;
+  padding-left: 10px;
+}
+.personal-graph {
+  height: 330px;
+  min-width: 0;
+}
+.inbox-item {
+  padding: 20px;
+  margin-top: 20px;
+  display: grid;
+  gap: 14px;
+}
+.inbox-item textarea {
+  min-height: 130px;
+}
+.markdown-preview {
+  min-height: 380px;
+  overflow-wrap: anywhere;
+}
+.markdown-preview pre {
+  overflow: auto;
+}
+@media (max-width: 1050px) {
+  .personal-layout {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .personal-details {
+    grid-column: 2;
+  }
+}
+@media (max-width: 700px) {
+  .personal-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .personal-details {
+    grid-column: 1;
+  }
+  .personal-fieldset {
+    padding: 10px;
+  }
+}
 .task-home {
   max-width: 1120px;
   margin: 64px auto;

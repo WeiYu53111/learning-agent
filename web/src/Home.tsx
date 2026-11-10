@@ -54,6 +54,12 @@ export default function Home() {
                   "查看知识点、知识关系和原文依据。",
                   "library&action=browse",
                 ],
+                [
+                  "04",
+                  "个人知识库",
+                  "整理自己的理解，连接知识与想法。",
+                  "personal",
+                ],
               ].map(([number, title, description, target]) => (
                 <Link
                   className="task-card"

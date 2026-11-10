@@ -14,7 +14,7 @@ from .storage import Store, writer_lock
 def purge_legacy(root: Path, book_id: str, *, apply=False):
     store = Store(root)
     with writer_lock(root), store.connect() as conn:
-        if conn.execute("PRAGMA user_version").fetchone()[0] != 6:
+        if conn.execute("PRAGMA user_version").fetchone()[0] not in (6, 7):
             raise AppError("请先升级至 schema 6，再清理旧知识。")
         rows = conn.execute("SELECT * FROM book_indexes WHERE book_id=?", (book_id,)).fetchall()
         targets = [r for r in rows if not is_current(r)]

@@ -296,6 +296,8 @@ def read(store):
 
 def create_app(store: Store, static_dir: Path = STATIC, config=None, backend=None):
     app = FastAPI(title="教材检查工作台", docs_url=None, redoc_url=None, openapi_url=None)
+    from .personal_web import router as personal_router
+    app.include_router(personal_router(store))
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
     )

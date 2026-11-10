@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import Relations from "./Relations";
 import ExtractionPage from "./ExtractionPage";
 import Home from "./Home";
+import Personal from "./Personal";
 import { Highlight } from "./SourceText";
 export { Highlight } from "./SourceText";
 import type {
@@ -199,6 +200,7 @@ function Source({
 
 export default function App() {
   const [params] = useSearchParams();
+  if (params.get("view") === "personal") return <Personal />;
   if (
     ["home", "import", "library"].includes(params.get("view") || "home") &&
     !(!params.has("view") && params.has("book"))
@@ -219,6 +221,22 @@ function Workspace() {
   const [kind, setKind] = useState("");
   const [tab, setTab] = useState("points");
   const [refreshing, setRefreshing] = useState(false);
+  const [collectStatus, setCollectStatus] = useState("");
+  async function collectPoint(key: string) {
+    setCollectStatus("正在加入…");
+    try {
+      const response = await fetch("/api/personal/collect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ book, index, key }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "加入失败");
+      setCollectStatus("已加入个人知识库收件箱");
+    } catch (e) {
+      setCollectStatus(e instanceof Error ? e.message : "加入失败");
+    }
+  }
   const books = useQuery({
     queryKey: ["books"],
     queryFn: () => get<Book[]>("/books"),
@@ -626,6 +644,10 @@ function Workspace() {
                         查看关联知识 →
                       </button>
                     </div>
+                    <button onClick={() => void collectPoint(p.key)}>
+                      加入收件箱
+                    </button>
+                    {collectStatus && <p role="status">{collectStatus}</p>}
                     {key === p.key && point.data && (
                       <Relations
                         data={point.data}

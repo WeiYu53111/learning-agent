@@ -95,9 +95,16 @@ class Store:
 
     def initialize(self):
         self.root.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            with sqlite3.connect(self.path) as source:
+                if source.execute("PRAGMA user_version").fetchone()[0] < 7:
+                    backup = self.root / "learning.pre-personal.sqlite"
+                    if not backup.exists():
+                        with sqlite3.connect(backup) as target:
+                            source.backup(target)
         with self.connect() as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5, 6):
+            if version not in (0, 1, 2, 3, 4, 5, 6, 7):
                 raise AppError("数据库版本不兼容，请使用新的数据目录。")
             if version == 0:
                 conn.executescript(SCHEMA)
@@ -158,6 +165,11 @@ class Store:
                 if not conn.in_transaction:
                     conn.execute("BEGIN")
                 migrate(conn)
+            if version < 7:
+                from .personal import migrate as migrate_personal
+                if not conn.in_transaction:
+                    conn.execute("BEGIN")
+                migrate_personal(conn)
             conn.execute("PRAGMA journal_mode=WAL")
             # Materialize WAL state before subsequent read-only connections.
             conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
@@ -227,3 +239,5 @@ class Store:
         )
         if cursor.rowcount != 1:
             raise AppError("会话已变化，请恢复后继续。")
+        from .personal import collect_session
+        collect_session(conn, identifier, state)

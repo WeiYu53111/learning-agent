@@ -289,7 +289,7 @@ def test_migration_is_idempotent_preserves_old_records(app, draft_id):
     app.store.initialize()
     app.store.initialize()
     assert app.version(draft_id)[0] == before
-    assert app.store.rows("PRAGMA user_version")[0]["user_version"] == 6
+    assert app.store.rows("PRAGMA user_version")[0]["user_version"] == 7
 
 
 def test_all_structure_batches_finish_before_questions(app, book_id, monkeypatch):
