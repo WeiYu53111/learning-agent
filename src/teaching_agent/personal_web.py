@@ -1,5 +1,6 @@
 """Local, transactional personal knowledge API."""
 
+import hashlib
 import json
 from contextlib import contextmanager
 from typing import Literal
@@ -43,6 +44,14 @@ class CollectInput(BaseModel):
     book: str
     index: str
     key: str
+
+
+class SelectionInput(BaseModel):
+    book: str
+    quote: str = Field(min_length=1, max_length=20000)
+    page: int | None = Field(default=None, ge=1)
+    start_line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
 
 
 def router(store):
@@ -92,6 +101,51 @@ def router(store):
     def create(value: CardInput):
         with write() as conn:
             return service.save_card(conn, value.model_dump())
+
+    @api.post("/selections")
+    def collect_selection(value: SelectionInput):
+        quote = value.quote.strip()
+        if not quote:
+            raise HTTPException(400, "请选择原文。")
+        with write() as conn:
+            row = conn.execute("SELECT data FROM books WHERE id=?", (value.book,)).fetchone()
+            if not row:
+                raise HTTPException(404, "教材不存在。")
+            book = json.loads(row[0])
+            if book.get("source_type", "pdf") == "pdf":
+                if value.page is None or value.page > book["page_count"]:
+                    raise HTTPException(400, "页码无效。")
+                location = {"kind": "pdf", "page": value.page}
+            else:
+                if (
+                    value.start_line is None
+                    or value.end_line is None
+                    or value.end_line < value.start_line
+                ):
+                    raise HTTPException(400, "行号无效。")
+                location = {
+                    "kind": "text",
+                    "start_line": value.start_line,
+                    "end_line": value.end_line,
+                }
+            source = {
+                "book_id": book["id"],
+                "filename": book["filename"],
+                "source_version": book.get("source_version", "legacy"),
+                "sha256": book["sha256"],
+                "chunk_id": "",
+                "quote": quote,
+                "location": location,
+            }
+            identity = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+            return service.enqueue(
+                conn,
+                "selection:" + identity,
+                quote[:80],
+                quote,
+                [source],
+                [{"kind": "manual_selection"}],
+            )
 
     @api.put("/cards/{identifier}")
     def update(identifier: str, value: CardInput):

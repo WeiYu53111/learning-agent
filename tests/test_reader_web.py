@@ -6,6 +6,30 @@ from teaching_agent.storage import dumps
 from teaching_agent.web import create_app
 
 
+def test_selection_inbox_deduplicates_and_retains_source(app, tmp_path):
+    path = tmp_path / "selection.md"
+    path.write_text("# 标题\n知识摘录", encoding="utf-8")
+    book = app.import_source(path)
+    client = TestClient(create_app(app.store))
+    payload = {"book": book.id, "quote": "知识摘录", "start_line": 2, "end_line": 2}
+    first = client.post("/api/personal/selections", json=payload)
+    assert first.status_code == 200
+    second = client.post("/api/personal/selections", json=payload)
+    assert first.json()["id"] == second.json()["id"]
+    source = first.json()["sources"][0]
+    assert source["sha256"] == book.sha256
+    assert source["location"]["start_line"] == 2
+    result = client.get("/api/personal").json()
+    assert len(result["inbox"]) == 1
+    assert result["cards"] == []
+    assert (
+        client.post("/api/personal/selections", json={**payload, "quote": " "}).status_code == 400
+    )
+    assert (
+        client.post("/api/personal/selections", json={**payload, "end_line": 1}).status_code == 400
+    )
+
+
 def test_pdf_worker_has_javascript_mime(app, tmp_path):
     assets = tmp_path / "assets"
     assets.mkdir()

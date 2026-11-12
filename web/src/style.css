@@ -28,6 +28,29 @@
   gap: 12px;
   padding: 12px 20px;
 }
+.collection-feedback {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  padding: 16px 20px;
+  border: 1px solid #377463;
+  border-radius: 12px;
+  background: #edf8ef;
+  color: #214b35;
+  box-shadow: 0 6px 24px #0003;
+}
+.collection-feedback.failed {
+  background: #fff0ed;
+  color: #8a2820;
+  border-color: #b44c42;
+}
+.collection-feedback button {
+  margin-left: 12px;
+}
 .reader-toolbar input {
   width: 80px;
 }

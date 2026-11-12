@@ -32,6 +32,33 @@ test("PDF original renders selectable text, jumps pages and restores position", 
     return window.getSelection()!.toString();
   });
   expect(selection).toContain("Reader page 2");
+  const collect = reader.getByRole("button", {
+    name: "加入知识收件箱",
+    exact: true,
+  });
+  await expect(collect).toBeEnabled();
+  await collect.click();
+  await expect(
+    reader.getByRole("status").filter({ hasText: "已加入知识收件箱" }),
+  ).toBeVisible();
+  await reader.getByRole("button", { name: "关闭提示" }).click();
+  await reader.route("**/api/personal/selections", (route) =>
+    route.fulfill({
+      status: 500,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "保存失败" }),
+    }),
+  );
+  await reader.locator(".textLayer").evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+  });
+  await expect(collect).toBeEnabled();
+  await collect.click();
+  await expect(reader.getByRole("alert")).toContainText("加入失败：保存失败");
+  await reader.unroute("**/api/personal/selections");
   await reader.goto(`/?view=reader&book=${book.id}`);
   await expect(reader.getByLabel("物理页码")).toHaveValue("2");
   await reader.goto(`/?view=reader&book=${book.id}&page=1`);

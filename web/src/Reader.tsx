@@ -202,6 +202,7 @@ function TextPages({
           {lines.slice(first, end).map((s, i) => (
             <div
               className="original-line"
+              data-line={first + i + 1}
               key={first + i}
               style={{
                 position: "absolute",
@@ -228,6 +229,15 @@ function TextPages({
 }
 
 export default function Reader() {
+  const [selection, setSelection] = useState<{
+    quote: string;
+    page?: number;
+    start_line?: number;
+    end_line?: number;
+  } | null>(null);
+  const [collecting, setCollecting] = useState(false);
+  const [collectionMessage, setCollectionMessage] = useState("");
+  const [collectionFailed, setCollectionFailed] = useState(false);
   const [params, setParams] = useSearchParams();
   const book = params.get("book") || "";
   const query = useQuery({
@@ -250,6 +260,76 @@ export default function Reader() {
   const data = query.data,
     isPdf = data?.source_type === "pdf";
   const storageKey = data ? `reader:${book}:${data.sha256}` : "";
+  useEffect(() => {
+    const update = () => {
+      const selected = window.getSelection();
+      const root = surface.current;
+      if (
+        !selected ||
+        selected.isCollapsed ||
+        !root?.contains(selected.anchorNode) ||
+        !root.contains(selected.focusNode)
+      ) {
+        setSelection(null);
+        return;
+      }
+      const quote = selected.toString().trim();
+      if (!quote) {
+        setSelection(null);
+        return;
+      }
+      const lineOf = (node: Node | null) =>
+        Number(
+          (node instanceof Element ? node : node?.parentElement)
+            ?.closest("[data-line]")
+            ?.getAttribute("data-line"),
+        );
+      const a = lineOf(selected.anchorNode),
+        b = lineOf(selected.focusNode);
+      setSelection(
+        isPdf
+          ? { quote, page: position }
+          : a && b
+            ? { quote, start_line: Math.min(a, b), end_line: Math.max(a, b) }
+            : null,
+      );
+    };
+    document.addEventListener("selectionchange", update);
+    setSelection(null);
+    return () => document.removeEventListener("selectionchange", update);
+  }, [isPdf, position, book]);
+  async function collectSelection() {
+    if (!selection || collecting) return;
+    setCollecting(true);
+    setCollectionFailed(false);
+    setCollectionMessage("正在加入知识收件箱…");
+    try {
+      const response = await fetch("/api/personal/selections", {
+        signal: AbortSignal.timeout(15000),
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ book, ...selection }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(
+          typeof error.detail === "string"
+            ? error.detail
+            : "无法收集选区，请缩短选中文字后重试。",
+        );
+      }
+      setCollectionMessage("已加入知识收件箱，可前往整理。");
+    } catch (error) {
+      setCollectionFailed(true);
+      setCollectionMessage(
+        error instanceof Error && error.name === "TimeoutError"
+          ? "请求超时，暂未确认是否保存。可查看收件箱或重试。"
+          : `加入失败：${error instanceof Error ? error.message : "请重试。"}`,
+      );
+    } finally {
+      setCollecting(false);
+    }
+  }
   const total = isPdf
     ? pdf?.numPages || 1
     : data?.text?.split("\n").length || 1;
@@ -430,6 +510,30 @@ export default function Reader() {
       {data && (
         <>
           <div className="reader-toolbar">
+            <button
+              disabled={!selection || collecting}
+              onPointerDown={(e) => e.preventDefault()}
+              onClick={() => void collectSelection()}
+            >
+              {collecting ? "正在加入…" : "加入知识收件箱"}
+            </button>
+            <Link to="/?view=personal&tab=inbox" target="_blank">
+              打开收件箱
+            </Link>
+            {collectionMessage && (
+              <div
+                className={`collection-feedback ${collectionFailed ? "failed" : ""}`}
+                role={collectionFailed ? "alert" : "status"}
+                aria-live="polite"
+              >
+                <strong>{collectionMessage}</strong>
+                {!collecting && (
+                  <button onClick={() => setCollectionMessage("")}>
+                    关闭提示
+                  </button>
+                )}
+              </div>
+            )}
             {isPdf && (
               <button
                 disabled={!ready || position <= 1}
