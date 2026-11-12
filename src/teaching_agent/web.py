@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -14,8 +15,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .book_learning import knowledge_key
 from .book_models import KnowledgePoint, Navigation, NavigationItem, Relation
@@ -295,9 +296,13 @@ def read(store):
 
 
 def create_app(store: Store, static_dir: Path = STATIC, config=None, backend=None):
+    # Windows registry may classify .mjs as text/plain, blocking module workers.
+    mimetypes.add_type("text/javascript", ".mjs")
     app = FastAPI(title="教材检查工作台", docs_url=None, redoc_url=None, openapi_url=None)
     from .personal_web import router as personal_router
     app.include_router(personal_router(store))
+    from .reader_web import router as reader_router
+    app.include_router(reader_router(store))
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"]
     )

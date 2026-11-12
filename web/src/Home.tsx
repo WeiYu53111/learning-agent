@@ -4,11 +4,13 @@ import { Link, useSearchParams } from "react-router-dom";
 import ImportBook from "./ImportBook";
 import { extractionRequest } from "./useExtraction";
 import type { Book } from "./types";
+import { readerUrl } from "./readerLinks";
 
 export default function Home() {
   const [params] = useSearchParams();
   const view = params.get("view");
   const extracting = params.get("action") === "extraction";
+  const reading = params.get("action") === "reader";
   const [search, setSearch] = useState("");
   const [imported, setImported] = useState<Book | null>(null);
   const client = useQueryClient();
@@ -60,6 +62,12 @@ export default function Home() {
                   "整理自己的理解，连接知识与想法。",
                   "personal",
                 ],
+                [
+                  "05",
+                  "阅读原文件",
+                  "查看原始 PDF 版式或完整文本。",
+                  "library&action=reader",
+                ],
               ].map(([number, title, description, target]) => (
                 <Link
                   className="task-card"
@@ -101,7 +109,9 @@ export default function Home() {
           </>
         ) : (
           <>
-            <h1>{extracting ? "提取知识" : "浏览知识"}</h1>
+            <h1>
+              {reading ? "阅读原文件" : extracting ? "提取知识" : "浏览知识"}
+            </h1>
             <p className="muted">先选择一本教材。</p>
             <label className="library-search">
               搜索教材
@@ -139,7 +149,9 @@ export default function Home() {
                   <Link
                     className="task-card"
                     key={b.id}
-                    to={destination(b, extracting)}
+                    to={reading ? readerUrl(b.id) : destination(b, extracting)}
+                    target={reading ? "_blank" : undefined}
+                    rel={reading ? "noopener noreferrer" : undefined}
                   >
                     <h2>{b.filename}</h2>
                     <p>
@@ -149,7 +161,12 @@ export default function Home() {
                       {b.section_count} 章
                     </p>
                     <span className="task-enter">
-                      {extracting ? "进入提取" : "开始浏览"} →
+                      {reading
+                        ? "打开原文件"
+                        : extracting
+                          ? "进入提取"
+                          : "开始浏览"}{" "}
+                      →
                     </span>
                   </Link>
                 ))}

@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { OriginalLink } from "./readerLinks";
+const Reader = lazy(() => import("./Reader"));
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import Relations from "./Relations";
@@ -50,6 +52,7 @@ function TextSource({
   return (
     <aside className="source-panel panel">
       <h2>原文对照</h2>
+      <OriginalLink book={book} chunk={reference?.chunk_id} section={section} />
       {source.error && <p role="alert">{source.error.message}</p>}
       {source.data?.map((c) => (
         <article
@@ -129,6 +132,7 @@ function Source({
         <span className="badge neutral">PDF 物理页码</span>
       </div>
       <div className="page-nav">
+        <OriginalLink book={book} location={{ page: shownPage }} />
         <button
           aria-label="上一页"
           disabled={shownPage <= 1}
@@ -200,6 +204,12 @@ function Source({
 
 export default function App() {
   const [params] = useSearchParams();
+  if (params.get("view") === "reader")
+    return (
+      <Suspense fallback={<p>正在加载阅读器…</p>}>
+        <Reader key={params.get("book")} />
+      </Suspense>
+    );
   if (params.get("view") === "personal") return <Personal />;
   if (
     ["home", "import", "library"].includes(params.get("view") || "home") &&
@@ -361,6 +371,7 @@ function Workspace() {
         </button>
       </header>
       <div className="actions workspace-actions">
+        {!!book && <OriginalLink book={book} section={section} />}
         <button onClick={() => setParams({})}>← 返回首页</button>
         <button
           onClick={() => setParams({ view: "library", action: "browse" })}

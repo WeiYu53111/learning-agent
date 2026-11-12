@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import Markdown from "react-markdown";
+import { OriginalLink } from "./readerLinks";
 import { cardLinks } from "./cardLinks";
 import { Background, Controls, MarkerType, ReactFlow } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -101,7 +102,14 @@ function Sources({ sources }: { sources: Source[] }) {
           {s.available === false ? (
             <p>原始来源不可用</p>
           ) : (
-            <button onClick={() => setOpened(s)}>查看原文</button>
+            <>
+              <button onClick={() => setOpened(s)}>查看原文</button>
+              <OriginalLink
+                book={s.book_id}
+                location={s.location}
+                chunk={s.chunk_id}
+              />
+            </>
           )}
         </article>
       ))}

@@ -11,6 +11,7 @@ import {
 } from "./useExtraction";
 import type { Point, Item, Chunk, Catalog } from "./types";
 import { Highlight } from "./SourceText";
+import { OriginalLink } from "./readerLinks";
 import { BlockTiming, type Timing } from "./BlockTiming";
 type Content = {
   timing?: Timing | null;
@@ -384,7 +385,8 @@ export default function ExtractionPage() {
           {content?.chunks.map((c) => (
             <article key={c.id}>
               <h3>
-                原文 · {c.page != null ? `第 ${c.page} 页` : "文本"} · {c.id}
+                原文 · {c.page != null ? `第 ${c.page} 页` : "文本"} · {c.id}{" "}
+                <OriginalLink book={book} location={{ page: c.page }} chunk={c.id} />
               </h3>
               <pre>
                 <Highlight

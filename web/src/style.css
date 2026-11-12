@@ -14,6 +14,93 @@
   font-size: 14px;
   line-height: 1.65;
 }
+.reader-app .topbar {
+  flex-wrap: wrap;
+}
+.reader-app h1 {
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.reader-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 20px;
+}
+.reader-toolbar input {
+  width: 80px;
+}
+.reader-layout {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 12px;
+}
+.reader-outline {
+  padding: 16px;
+  max-height: 80vh;
+  overflow: auto;
+}
+.reader-outline button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 8px 0;
+}
+.reader-surface {
+  min-width: 0;
+  background: #e6e9e6;
+  padding: 12px 0;
+  overflow: auto;
+  height: calc(100vh - 160px);
+}
+.pdf-sheet {
+  position: relative;
+  margin: auto;
+  background: white;
+}
+.pdf-sheet canvas {
+  display: block;
+}
+.text-reader-scroll {
+  height: calc(100vh - 220px);
+  overflow: auto;
+  background: white;
+}
+.original-line {
+  display: flex;
+  font: 15px/25px monospace;
+}
+.original-line > span {
+  flex: 0 0 65px;
+  text-align: right;
+  padding-right: 15px;
+  color: #76877b;
+  user-select: none;
+}
+.original-line code {
+  font: inherit;
+  word-break: break-all;
+  flex: 1;
+  min-width: 0;
+  padding-right: 20px;
+  tab-size: 4;
+}
+@media (max-width: 700px) {
+  .reader-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .reader-outline {
+    max-height: 180px;
+    padding: 8px;
+  }
+  .reader-surface {
+    height: 70vh;
+  }
+  .text-reader-scroll {
+    height: 65vh;
+  }
+}
 .personal-fieldset {
   border: 0;
   margin: 0;

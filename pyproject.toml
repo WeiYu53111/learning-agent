@@ -20,7 +20,7 @@ teach = "teaching_agent.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-teaching_agent = ["prompts/*.txt", "web_static/*", "web_static/assets/*"]
+teaching_agent = ["prompts/*.txt", "web_static/*", "web_static/assets/*", "web_static/assets/pdf/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
